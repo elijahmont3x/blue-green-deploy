@@ -86,7 +86,7 @@ Add this deployment system to your existing application:
 cd /path/to/your-app
 
 # Download the deployment toolkit
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
 
 # Install the deployment scripts
 cd deployment
@@ -324,13 +324,13 @@ This deployment system can be used with multiple independent applications. Insta
 ```bash
 # First application
 cd /path/to/app1
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
 cd deployment
 ./install.sh app1 ..
 
 # Second application
 cd /path/to/app2
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
 cd deployment
 ./install.sh app2 ..
 ```
