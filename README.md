@@ -4,16 +4,16 @@ A utility for implementing zero-downtime deployments using the blue/green deploy
 
 ## What Is This?
 
-This is **not** an application, but a collection of deployment scripts and configuration templates that you add to your existing applications to enable blue/green deployments. Think of it as a deployment toolkit that integrates with your existing Docker-based applications.
+This is **not** an application, but a collection of deployment scripts and configuration templates that you install **directly on your production server** to enable blue/green deployments. Think of it as a server-side deployment toolkit that works with your existing Docker-based applications.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [How It Works](#how-it-works)
-- [Adding to Your Application](#adding-to-your-application)
+- [Server Installation](#server-installation)
 - [Deployment Workflow](#deployment-workflow)
+- [Configuration Approach](#configuration-approach)
 - [Command Reference](#command-reference)
-- [Configuration Reference](#configuration-reference)
 - [CI/CD Integration](#cicd-integration)
 - [Supporting Multiple Applications](#supporting-multiple-applications)
 - [Integrating Backend Services](#integrating-backend-services)
@@ -29,7 +29,7 @@ Blue/green deployment is a release technique that reduces downtime and risk by r
 
 This tool adds blue/green deployment capabilities to your existing Docker applications by:
 
-1. Creating two separate but identical environments
+1. Creating two separate but identical environments on your server
 2. Setting up Nginx as a reverse proxy for traffic control
 3. Managing the deployment, health checking, and traffic shifting
 4. Providing rollback capabilities if issues are detected
@@ -43,14 +43,14 @@ Key features:
 
 ## How It Works
 
-This system sits alongside your application and works with your existing `docker-compose.yml` and `Dockerfile`:
+This system is installed on your production server and works with your existing `docker-compose.yml` and `Dockerfile`:
 
 1. It creates environment-specific versions of your Docker Compose setup
 2. It configures Nginx as a load balancer in front of your application
 3. It manages which environment receives traffic and at what percentage
 4. It orchestrates the deployment, testing, and cutover process
 
-Here's how the system modifies your infrastructure:
+Here's how the system modifies your server infrastructure:
 
 ```
 Before:                         After:
@@ -68,97 +68,136 @@ Before:                         After:
                          └───────────┘       └───────────┘
 ```
 
-## Adding to Your Application
+## Server Installation
 
 ### Prerequisites
 
-To use this tool, your application must:
-- Use Docker and Docker Compose
-- Have a health check endpoint
-- Be stateless or use external databases (or handle data synchronization)
+To use this tool, you need:
+- A Linux server (like Vultr VPS)
+- Docker and Docker Compose installed
+- SSH access to your server
+- An application with a health check endpoint
 
-### Installation
+### Installation Process
 
-Add this deployment system to your existing application:
+This toolkit is installed **directly on your server**, not in your application repository:
 
 ```bash
-# Go to your application directory 
-cd /path/to/your-app
+# SSH into your server
+ssh user@your-server-ip
+
+# Create directory for your application deployment
+mkdir -p /app/your-app-name
+cd /app/your-app-name
 
 # Download the deployment toolkit
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts
-cd deployment
-./install.sh your-app-name ..
+./install.sh your-app-name .
 ```
 
-This adds the deployment scripts and configuration alongside your existing application.
+### Server Directory Structure
 
-### Project Structure Before & After
+The toolkit creates this structure **on your server**:
 
-Before:
 ```
-your-app/
-├── src/                  # Your application code
-├── docker-compose.yml    # Your Docker Compose file
-├── Dockerfile            # Your Dockerfile
-└── ...
-```
-
-After:
-```
-your-app/
-├── src/                  # Your application code
-├── docker-compose.yml    # Your Docker Compose file
-├── Dockerfile            # Your Dockerfile
-├── scripts/              # Added deployment scripts
+/app/your-app-name/              # Root directory on server
+├── docker-compose.yml           # Your application's compose file (uploaded to server)
+├── Dockerfile                    # Your application's Dockerfile (uploaded to server)
+├── scripts/                      # Added deployment scripts
 │   ├── deploy.sh
 │   ├── cutover.sh
 │   ├── rollback.sh
 │   └── ...
-├── config/               # Added configuration templates
+├── config/                       # Added configuration templates
 │   └── templates/
-├── plugins/              # Optional deployment plugins  
-└── config.env            # Deployment configuration
+├── plugins/                      # Optional deployment plugins  
+└── config.env                    # Deployment configuration (created on server)
 ```
 
-### Configuration
+**Important**: These files exist only on your server. They are NOT part of your application's Git repository.
 
-Configure your deployment by editing `config.env`:
+### Getting Your Application Files to the Server
+
+You need to get your `docker-compose.yml` and `Dockerfile` to your server:
+
+```bash
+# From your local development machine
+scp docker-compose.yml user@your-server-ip:/app/your-app-name/
+scp Dockerfile user@your-server-ip:/app/your-app-name/
+```
+
+Alternatively, your CI/CD pipeline can copy these files during deployment.
+
+## Configuration Approach
+
+### Server-Side Configuration (config.env)
+
+The `config.env` file is created on your server and contains deployment configuration:
 
 ```properties
-# Application Settings
+# Application Settings - Non-sensitive values
 APP_NAME=your-app-name
 IMAGE_REPO=username/your-app
 NGINX_PORT=80             # Port for public access
 BLUE_PORT=8081            # Internal port for blue environment
 GREEN_PORT=8082           # Internal port for green environment
 HEALTH_ENDPOINT=/health   # Your application's health check URL
-
-# Add any application-specific environment variables
-DATABASE_URL=postgresql://user:password@postgres:5432/yourapp
-REDIS_URL=redis://redis:6379/0
-API_KEY=your_api_key_here
 ```
+
+### Handling Sensitive Configuration
+
+For sensitive data (passwords, API keys, etc.), use one of these approaches:
+
+1. **CI/CD Secrets** (Recommended): Store sensitive info in GitHub Secrets or similar, and pass them to the server during deployment
+   ```yaml
+   # GitHub Actions example
+   - name: Deploy
+     uses: appleboy/ssh-action@master
+     with:
+       # ...
+       script: |
+         cd /app/your-app-name
+         export DATABASE_URL="${{ secrets.DATABASE_URL }}"
+         export API_KEY="${{ secrets.API_KEY }}"
+         ./scripts/deploy.sh ${{ github.sha }}
+   ```
+
+2. **Server Environment Variables**: Set them on your server before deployment
+   ```bash
+   # On your server
+   export DATABASE_URL="postgresql://user:password@host:5432/db"
+   ./scripts/deploy.sh v1.0
+   ```
+
+3. **For Testing/Development Only**: Add to config.env on the server (not recommended for production)
+   ```properties
+   # config.env - ONLY FOR NON-SENSITIVE DATA
+   DATABASE_URL=postgresql://user:password@localhost:5432/db
+   ```
+
+The deployment scripts will capture and use these environment variables during deployment.
 
 ## Deployment Workflow
 
-Once the deployment system is added to your application, follow this workflow:
+Once the system is installed on your server, follow this workflow:
 
 ### 1. Build & Push Your Application Image
 
 ```bash
-# Build your application Docker image 
+# From your local development machine or CI/CD
 docker build -t username/your-app:v1.0 .
-
-# Push to a registry
 docker push username/your-app:v1.0
 ```
 
 ### 2. Deploy the New Version
 
 ```bash
+# SSH into your server
+ssh user@your-server-ip
+cd /app/your-app-name
+
 # Run the deployment script with your version
 ./scripts/deploy.sh v1.0
 
@@ -172,24 +211,30 @@ docker push username/your-app:v1.0
 ### 3. When Updating to a New Version
 
 ```bash
-# Build and push the new version
+# Build and push the new version (from local or CI/CD)
 docker build -t username/your-app:v1.1 .
 docker push username/your-app:v1.1
 
-# Deploy the new version
+# SSH into your server and deploy
+ssh user@your-server-ip
+cd /app/your-app-name
 ./scripts/deploy.sh v1.1
 ```
 
 ### 4. If You Need to Rollback
 
 ```bash
+# SSH into your server
+ssh user@your-server-ip
+cd /app/your-app-name
+
 # Rollback to the previous version
 ./scripts/rollback.sh
 ```
 
 ## Command Reference
 
-The deployment toolkit provides these commands:
+The deployment toolkit provides these commands (all run on your server):
 
 ### Deploy
 
@@ -248,35 +293,14 @@ The deployment toolkit provides these commands:
 ./scripts/cleanup.sh --failed-only    # Clean up only failed deployments
 ```
 
-## Configuration Reference
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| APP_NAME | Application name used as prefix for containers | (required) |
-| IMAGE_REPO | Docker image repository without tag | (required) |
-| NGINX_PORT | External port for Nginx load balancer | 80 |
-| BLUE_PORT | Internal port for blue environment | 8081 |
-| GREEN_PORT | Internal port for green environment | 8082 |
-| HEALTH_ENDPOINT | Health check URL path | /health |
-| HEALTH_RETRIES | Number of health check attempts | 12 |
-| HEALTH_DELAY | Seconds between health checks | 5 |
-
-### Templates
-
-The system includes these configuration templates:
-
-- `config/templates/nginx-single-env.conf.template`: Nginx config for single environment
-- `config/templates/nginx-dual-env.conf.template`: Nginx config for traffic splitting
-- `config/templates/docker-compose.override.template`: Environment-specific overrides
-
 ## CI/CD Integration
 
 ### GitHub Actions Example
 
+Add this workflow file to your application repository:
+
 ```yaml
-# .github/workflows/deploy.yml
+# .github/workflows/deploy.yml (in your application repository)
 name: Deploy
 
 on:
@@ -311,40 +335,61 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /path/to/your-app
+            cd /app/your-app-name
+            # Pass secrets from GitHub to the server
             export DATABASE_URL="${{ secrets.DATABASE_URL }}"
             export API_KEY="${{ secrets.API_KEY }}"
+            export REDIS_URL="${{ secrets.REDIS_URL }}"
+            # Run deployment with the image version
             ./scripts/deploy.sh ${{ github.sha }}
 ```
 
+### Required GitHub Secrets/Variables
+
+Add these to your GitHub repository (Settings → Secrets and variables → Actions):
+
+**Secrets** (for sensitive information):
+- `SERVER_HOST`: Your server's IP address
+- `SERVER_USER`: SSH username
+- `SSH_PRIVATE_KEY`: Private SSH key for authentication
+- `DOCKER_USERNAME`: Docker Hub username
+- `DOCKER_PASSWORD`: Docker Hub password/token
+- `DATABASE_URL`: Database connection string
+- `API_KEY`: API key for your application
+- `REDIS_URL`: Redis connection string
+
+**Variables** (for non-sensitive configuration):
+- `APP_NAME`: Your application name
+- `IMAGE_REPO`: Docker image repository
+
 ## Supporting Multiple Applications
 
-This deployment system can be used with multiple independent applications. Install it separately for each application:
+You can install this deployment system for multiple applications on the same server:
 
 ```bash
 # First application
-cd /path/to/app1
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
-cd deployment
-./install.sh app1 ..
+mkdir -p /app/app1
+cd /app/app1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+./install.sh app1 .
 
 # Second application
-cd /path/to/app2
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1 -C ./deployment
-cd deployment
-./install.sh app2 ..
+mkdir -p /app/app2
+cd /app/app2
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+./install.sh app2 .
 ```
 
-Configure unique ports for each application:
+Configure unique ports for each application in their respective config.env files:
 
 ```properties
-# app1/config.env
+# /app/app1/config.env
 APP_NAME=app1
 NGINX_PORT=80
 BLUE_PORT=8081
 GREEN_PORT=8082
 
-# app2/config.env
+# /app/app2/config.env
 APP_NAME=app2
 NGINX_PORT=81
 BLUE_PORT=8083
@@ -355,7 +400,7 @@ GREEN_PORT=8084
 
 ### Redis Integration
 
-1. Add Redis to your `docker-compose.yml`:
+1. Add Redis to your application's `docker-compose.yml`:
 
 ```yaml
 services:
@@ -373,15 +418,23 @@ volumes:
   redis-data:
 ```
 
-2. Add connection details to `config.env`:
+2. Pass Redis connection info during deployment:
 
-```properties
-REDIS_URL=redis://redis:6379/0
+```yaml
+# In GitHub Actions
+- name: Deploy
+  uses: appleboy/ssh-action@master
+  with:
+    # ...
+    script: |
+      cd /app/your-app-name
+      export REDIS_URL="${{ secrets.REDIS_URL }}"
+      ./scripts/deploy.sh ${{ github.sha }}
 ```
 
 ### PostgreSQL Integration
 
-1. Add PostgreSQL to your `docker-compose.yml`:
+1. Add PostgreSQL to your application's `docker-compose.yml`:
 
 ```yaml
 services:
@@ -403,21 +456,29 @@ volumes:
   postgres-data:
 ```
 
-2. Add connection details to `config.env`:
+2. Pass database connection info during deployment:
 
-```properties
-DB_USER=dbuser
-DB_PASSWORD=secure_password
-DB_NAME=appdb
-DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+```yaml
+# In GitHub Actions
+- name: Deploy
+  uses: appleboy/ssh-action@master
+  with:
+    # ...
+    script: |
+      cd /app/your-app-name
+      export DB_USER="${{ secrets.DB_USER }}"
+      export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+      export DB_NAME="${{ secrets.DB_NAME }}"
+      export DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}"
+      ./scripts/deploy.sh ${{ github.sha }}
 ```
 
-3. For database migrations, create a plugin:
+3. For database migrations, create a plugin on your server:
 
 ```bash
-# Create plugins/db-migrate.sh
-mkdir -p plugins
-cat > plugins/db-migrate.sh << 'EOL'
+# On your server
+mkdir -p /app/your-app-name/plugins
+cat > /app/your-app-name/plugins/db-migrate.sh << 'EOL'
 #!/bin/bash
 
 hook_pre_deploy() {
@@ -435,19 +496,19 @@ hook_pre_deploy() {
 }
 EOL
 
-chmod +x plugins/db-migrate.sh
+chmod +x /app/your-app-name/plugins/db-migrate.sh
 ```
 
 ## Advanced Usage
 
 ### Plugin System
 
-Create custom plugins to extend the deployment process:
+Create custom plugins on your server to extend the deployment process:
 
 ```bash
-# Create a plugin file
-mkdir -p plugins
-cat > plugins/notifications.sh << 'EOL'
+# On your server
+mkdir -p /app/your-app-name/plugins
+cat > /app/your-app-name/plugins/notifications.sh << 'EOL'
 #!/bin/bash
 
 hook_post_deploy() {
@@ -464,7 +525,7 @@ hook_post_deploy() {
 }
 EOL
 
-chmod +x plugins/notifications.sh
+chmod +x /app/your-app-name/plugins/notifications.sh
 ```
 
 Available hooks:
@@ -477,7 +538,14 @@ Available hooks:
 
 ### Customizing Nginx Configuration
 
-Edit the Nginx templates in `config/templates/` to add custom routing, SSL configuration, or other requirements:
+Edit the Nginx templates on your server to add custom routing, SSL configuration, or other requirements:
+
+```bash
+# On your server
+nano /app/your-app-name/config/templates/nginx-single-env.conf.template
+```
+
+Example SSL configuration:
 
 ```nginx
 # Example modification for SSL
@@ -506,12 +574,15 @@ server {
 |-------|----------|
 | Health check failing | Check logs with `docker-compose -p your-app-blue logs` |
 | Nginx not routing | Check generated config with `cat nginx.conf` |
-| Environment variables not passing | Verify they're in config.env or explicitly exported |
+| Environment variables not passing | Verify they're exported before running deploy.sh |
 | Database connection failing | Check network settings and credentials |
 
 ### Diagnosing Problems
 
 ```bash
+# On your server
+cd /app/your-app-name
+
 # Check which environment is active
 grep -E "blue|green" nginx.conf
 
@@ -531,6 +602,9 @@ docker-compose -p your-app-blue logs --tail=100
 If things go wrong, you can manually reset:
 
 ```bash
+# On your server
+cd /app/your-app-name
+
 # Stop all environments
 ./scripts/cleanup.sh --all
 
