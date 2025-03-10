@@ -12,11 +12,11 @@ http {
     keepalive_timeout  65;
     
     upstream backend {
-        server {{APP_NAME}}-{{ENVIRONMENT}}-backend-api-1:3000;
+        server APP_NAME-ENVIRONMENT-backend-api-1:3000;
     }
 
     server {
-        listen {{NGINX_PORT}};
+        listen NGINX_PORT;
         
         location / {
             proxy_pass http://backend;

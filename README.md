@@ -15,6 +15,7 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Configuration Approach](#configuration-approach)
 - [Command Reference](#command-reference)
 - [CI/CD Integration](#cicd-integration)
+- [Handling Configuration File Updates](#handling-configuration-file-updates)
 - [Supporting Multiple Applications](#supporting-multiple-applications)
 - [Integrating Backend Services](#integrating-backend-services)
 - [Advanced Usage](#advanced-usage)
@@ -112,8 +113,7 @@ The toolkit creates this structure **on your server**:
 │   └── ...
 ├── config/                       # Added configuration templates
 │   └── templates/
-├── plugins/                      # Optional deployment plugins  
-└── config.env                    # Deployment configuration (created on server)
+└── plugins/                      # Optional deployment plugins  
 ```
 
 **Important**: These files exist only on your server. They are NOT part of your application's Git repository.
@@ -132,52 +132,96 @@ Alternatively, your CI/CD pipeline can copy these files during deployment.
 
 ## Configuration Approach
 
-### Server-Side Configuration (config.env)
+### Command-Line Parameters
 
-The `config.env` file is created on your server and contains deployment configuration:
+The ideal approach is to pass configuration directly as parameters to the deployment scripts:
 
-```properties
-# Application Settings - Non-sensitive values
-APP_NAME=your-app-name
-IMAGE_REPO=username/your-app
-NGINX_PORT=80             # Port for public access
-BLUE_PORT=8081            # Internal port for blue environment
-GREEN_PORT=8082           # Internal port for green environment
-HEALTH_ENDPOINT=/health   # Your application's health check URL
+```yaml
+# In GitHub Actions workflow
+- name: Deploy
+  uses: appleboy/ssh-action@master
+  with:
+    host: ${{ secrets.SERVER_HOST }}
+    username: ${{ secrets.SERVER_USER }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    script: |
+      cd /app/your-app-name
+      ./scripts/deploy.sh ${{ github.sha }} \
+        --app-name=${{ vars.APP_NAME }} \
+        --image-repo=${{ vars.IMAGE_REPO }} \
+        --nginx-port=${{ vars.NGINX_PORT }} \
+        --blue-port=${{ vars.BLUE_PORT }} \
+        --green-port=${{ vars.GREEN_PORT }} \
+        --database-url="${{ secrets.DATABASE_URL }}" \
+        --api-key="${{ secrets.API_KEY }}"
 ```
 
-### Handling Sensitive Configuration
+Benefits of this approach:
+- No need to create or maintain config files
+- Explicit parameters make it clear what values are being passed
+- Better traceability in logs and deployment history
+- Easier to test different configurations
 
-For sensitive data (passwords, API keys, etc.), use one of these approaches:
+To implement this approach, update your deployment scripts to accept command-line parameters:
 
-1. **CI/CD Secrets** (Recommended): Store sensitive info in GitHub Secrets or similar, and pass them to the server during deployment
-   ```yaml
-   # GitHub Actions example
-   - name: Deploy
-     uses: appleboy/ssh-action@master
-     with:
-       # ...
-       script: |
-         cd /app/your-app-name
-         export DATABASE_URL="${{ secrets.DATABASE_URL }}"
-         export API_KEY="${{ secrets.API_KEY }}"
-         ./scripts/deploy.sh ${{ github.sha }}
-   ```
+```bash
+#!/bin/bash
+# deploy.sh with parameter support
 
-2. **Server Environment Variables**: Set them on your server before deployment
-   ```bash
-   # On your server
-   export DATABASE_URL="postgresql://user:password@host:5432/db"
-   ./scripts/deploy.sh v1.0
-   ```
+# Default values
+APP_NAME="app"
+NGINX_PORT=80
+BLUE_PORT=8081
+GREEN_PORT=8082
 
-3. **For Testing/Development Only**: Add to config.env on the server (not recommended for production)
-   ```properties
-   # config.env - ONLY FOR NON-SENSITIVE DATA
-   DATABASE_URL=postgresql://user:password@localhost:5432/db
-   ```
+# Parse command-line arguments
+VERSION=$1
+shift
 
-The deployment scripts will capture and use these environment variables during deployment.
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    --app-name=*) APP_NAME="${1#*=}" ;;
+    --image-repo=*) IMAGE_REPO="${1#*=}" ;;
+    --nginx-port=*) NGINX_PORT="${1#*=}" ;;
+    --blue-port=*) BLUE_PORT="${1#*=}" ;;
+    --green-port=*) GREEN_PORT="${1#*=}" ;;
+    --database-url=*) DATABASE_URL="${1#*=}" ;;
+    --api-key=*) API_KEY="${1#*=}" ;;
+    *) echo "Unknown parameter: $1"; exit 1 ;;
+  esac
+  shift
+done
+
+# Use the parameters directly in your deployment logic
+echo "Deploying version $VERSION with configuration:"
+echo "  App Name: $APP_NAME"
+echo "  Nginx Port: $NGINX_PORT"
+# ...rest of the deployment script...
+```
+
+This approach also makes it easier to run deployments locally with different configurations:
+
+```bash
+./scripts/deploy.sh v1.0 --app-name=test-app --nginx-port=8080 --database-url=postgres://localhost/testdb
+```
+
+### Configuration Values to Consider
+
+Whether using command-line parameters or any other approach, these are the key configuration values to manage:
+
+**Infrastructure Settings**:
+- `APP_NAME`: Your application name (used as prefix for containers)
+- `IMAGE_REPO`: Docker image repository without tag
+- `NGINX_PORT`: External port for Nginx load balancer
+- `BLUE_PORT`: Internal port for blue environment
+- `GREEN_PORT`: Internal port for green environment
+- `HEALTH_ENDPOINT`: Health check URL path
+
+**Sensitive Data**:
+- `DATABASE_URL`: Database connection string
+- `API_KEY`: API keys for your application
+- `REDIS_URL`: Redis connection string
+- Other application-specific secrets
 
 ## Deployment Workflow
 
@@ -198,8 +242,8 @@ docker push username/your-app:v1.0
 ssh user@your-server-ip
 cd /app/your-app-name
 
-# Run the deployment script with your version
-./scripts/deploy.sh v1.0
+# Run the deployment script with your version and configuration
+./scripts/deploy.sh v1.0 --app-name=your-app-name --image-repo=username/your-app
 
 # This will:
 # - Set up the initial environment if none exists
@@ -218,7 +262,7 @@ docker push username/your-app:v1.1
 # SSH into your server and deploy
 ssh user@your-server-ip
 cd /app/your-app-name
-./scripts/deploy.sh v1.1
+./scripts/deploy.sh v1.1 --app-name=your-app-name --image-repo=username/your-app
 ```
 
 ### 4. If You Need to Rollback
@@ -229,7 +273,7 @@ ssh user@your-server-ip
 cd /app/your-app-name
 
 # Rollback to the previous version
-./scripts/rollback.sh
+./scripts/rollback.sh --app-name=your-app-name
 ```
 
 ## Command Reference
@@ -242,13 +286,19 @@ The deployment toolkit provides these commands (all run on your server):
 ./scripts/deploy.sh VERSION [OPTIONS]
 
 # Options:
-#   --force     Force deployment even if target environment is active
-#   --no-shift  Don't shift traffic automatically (manual cutover)
-#   --config=X  Use alternate config file (default: config.env)
+#   --app-name=NAME       Application name
+#   --image-repo=REPO     Docker image repository
+#   --nginx-port=PORT     Nginx external port
+#   --blue-port=PORT      Blue environment port
+#   --green-port=PORT     Green environment port
+#   --database-url=URL    Database connection string
+#   --api-key=KEY         API key
+#   --force               Force deployment even if target environment is active
+#   --no-shift            Don't shift traffic automatically (manual cutover)
 
 # Examples:
-./scripts/deploy.sh v1.0              # Deploy version v1.0
-./scripts/deploy.sh v1.1 --no-shift   # Deploy without auto traffic shifting
+./scripts/deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
+./scripts/deploy.sh v1.1 --app-name=myapp --no-shift
 ```
 
 ### Cutover
@@ -257,11 +307,11 @@ The deployment toolkit provides these commands (all run on your server):
 ./scripts/cutover.sh [blue|green] [OPTIONS]
 
 # Options:
-#   --keep-old  Don't stop the previous environment
-#   --config=X  Use alternate config file (default: config.env)
+#   --app-name=NAME       Application name
+#   --keep-old            Don't stop the previous environment
 
 # Example:
-./scripts/cutover.sh green            # Shift all traffic to green environment
+./scripts/cutover.sh green --app-name=myapp
 ```
 
 ### Rollback
@@ -270,11 +320,11 @@ The deployment toolkit provides these commands (all run on your server):
 ./scripts/rollback.sh [OPTIONS]
 
 # Options:
-#   --force     Force rollback even if previous environment is unhealthy
-#   --config=X  Use alternate config file (default: config.env)
+#   --app-name=NAME       Application name
+#   --force               Force rollback even if previous environment is unhealthy
 
 # Example:
-./scripts/rollback.sh                 # Roll back to previous environment
+./scripts/rollback.sh --app-name=myapp
 ```
 
 ### Cleanup
@@ -283,14 +333,14 @@ The deployment toolkit provides these commands (all run on your server):
 ./scripts/cleanup.sh [OPTIONS]
 
 # Options:
-#   --all          Clean up everything including current active environment
-#   --failed-only  Clean up only failed deployments
-#   --old-only     Clean up only old, inactive environments
-#   --dry-run      Only show what would be cleaned without actually removing anything
-#   --config=X     Use alternate config file (default: config.env)
+#   --app-name=NAME       Application name
+#   --all                 Clean up everything including current active environment
+#   --failed-only         Clean up only failed deployments
+#   --old-only            Clean up only old, inactive environments
+#   --dry-run             Only show what would be cleaned without actually removing anything
 
 # Example:
-./scripts/cleanup.sh --failed-only    # Clean up only failed deployments
+./scripts/cleanup.sh --app-name=myapp --failed-only
 ```
 
 ## CI/CD Integration
@@ -328,6 +378,17 @@ jobs:
           push: true
           tags: username/your-app:${{ github.sha }}
       
+      # Copy configuration files to server
+      - name: Copy configuration files to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml,Dockerfile"
+          target: "/app/your-app-name"
+      
+      # Deploy with parameters
       - name: Deploy
         uses: appleboy/ssh-action@master
         with:
@@ -336,12 +397,15 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /app/your-app-name
-            # Pass secrets from GitHub to the server
-            export DATABASE_URL="${{ secrets.DATABASE_URL }}"
-            export API_KEY="${{ secrets.API_KEY }}"
-            export REDIS_URL="${{ secrets.REDIS_URL }}"
-            # Run deployment with the image version
-            ./scripts/deploy.sh ${{ github.sha }}
+            ./scripts/deploy.sh ${{ github.sha }} \
+              --app-name=${{ vars.APP_NAME }} \
+              --image-repo=${{ vars.IMAGE_REPO }} \
+              --nginx-port=${{ vars.NGINX_PORT }} \
+              --blue-port=${{ vars.BLUE_PORT }} \
+              --green-port=${{ vars.GREEN_PORT }} \
+              --database-url="${{ secrets.DATABASE_URL }}" \
+              --api-key="${{ secrets.API_KEY }}" \
+              --redis-url="${{ secrets.REDIS_URL }}"
 ```
 
 ### Required GitHub Secrets/Variables
@@ -361,6 +425,79 @@ Add these to your GitHub repository (Settings → Secrets and variables → Acti
 **Variables** (for non-sensitive configuration):
 - `APP_NAME`: Your application name
 - `IMAGE_REPO`: Docker image repository
+- `NGINX_PORT`: Port for Nginx (default: 80)
+- `BLUE_PORT`: Port for blue environment (default: 8081)
+- `GREEN_PORT`: Port for green environment (default: 8082)
+- `HEALTH_ENDPOINT`: Health check endpoint (default: /health)
+
+## Handling Configuration File Updates
+
+An important consideration is how `docker-compose.yml` and `Dockerfile` get updated on your server when you make changes to them in your repository.
+
+### Approaches for Updating Configuration Files
+
+1. **Automatic with Every Deployment** (Recommended)
+   - Copy files to the server with each deployment
+   - Ensures your server always has the latest configuration
+   - Simple and reliable approach
+
+2. **Conditional Updates**
+   - Only copy files when they've changed in your repository
+   - Slightly more efficient but adds complexity
+   - Requires additional GitHub Actions steps
+
+3. **Manual Updates**
+   - Update files manually when needed
+   - Not recommended for most teams
+   - Prone to forgetting updates
+
+### Example: Automatic File Updates with GitHub Actions
+
+```yaml
+# In your GitHub Actions workflow
+- name: Copy configuration files to server
+  uses: appleboy/scp-action@master
+  with:
+    host: ${{ secrets.SERVER_HOST }}
+    username: ${{ secrets.SERVER_USER }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "docker-compose.yml,Dockerfile"
+    target: "/app/your-app-name"
+```
+
+### Example: Conditional File Updates
+
+```yaml
+# In your GitHub Actions workflow
+- name: Check if docker-compose.yml or Dockerfile changed
+  id: changed-files
+  uses: tj-actions/changed-files@v35
+  with:
+    files: |
+      docker-compose.yml
+      Dockerfile
+      
+- name: Copy configuration files to server if changed
+  if: steps.changed-files.outputs.any_changed == 'true'
+  uses: appleboy/scp-action@master
+  with:
+    host: ${{ secrets.SERVER_HOST }}
+    username: ${{ secrets.SERVER_USER }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    source: "docker-compose.yml,Dockerfile"
+    target: "/app/your-app-name"
+```
+
+### Additional Files to Consider
+
+Depending on your application, you might need to copy other configuration files:
+
+- Environment-specific configurations
+- Nginx configuration templates
+- Docker Compose override files
+- SSL certificates
+
+The important principle is ensuring your server-side deployment system has all the configuration files it needs to run your application properly.
 
 ## Supporting Multiple Applications
 
@@ -370,30 +507,32 @@ You can install this deployment system for multiple applications on the same ser
 # First application
 mkdir -p /app/app1
 cd /app/app1
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 ./install.sh app1 .
 
 # Second application
 mkdir -p /app/app2
 cd /app/app2
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 ./install.sh app2 .
 ```
 
-Configure unique ports for each application in their respective config.env files:
+Configure unique ports for each application using command-line parameters:
 
-```properties
-# /app/app1/config.env
-APP_NAME=app1
-NGINX_PORT=80
-BLUE_PORT=8081
-GREEN_PORT=8082
+```bash
+# For app1
+./scripts/deploy.sh v1.0 \
+  --app-name=app1 \
+  --nginx-port=80 \
+  --blue-port=8081 \
+  --green-port=8082
 
-# /app/app2/config.env
-APP_NAME=app2
-NGINX_PORT=81
-BLUE_PORT=8083
-GREEN_PORT=8084
+# For app2
+./scripts/deploy.sh v1.0 \
+  --app-name=app2 \
+  --nginx-port=81 \
+  --blue-port=8083 \
+  --green-port=8084
 ```
 
 ## Integrating Backend Services
@@ -420,16 +559,10 @@ volumes:
 
 2. Pass Redis connection info during deployment:
 
-```yaml
-# In GitHub Actions
-- name: Deploy
-  uses: appleboy/ssh-action@master
-  with:
-    # ...
-    script: |
-      cd /app/your-app-name
-      export REDIS_URL="${{ secrets.REDIS_URL }}"
-      ./scripts/deploy.sh ${{ github.sha }}
+```bash
+./scripts/deploy.sh v1.0 \
+  --app-name=your-app-name \
+  --redis-url="redis://redis:6379/0"
 ```
 
 ### PostgreSQL Integration
@@ -458,19 +591,10 @@ volumes:
 
 2. Pass database connection info during deployment:
 
-```yaml
-# In GitHub Actions
-- name: Deploy
-  uses: appleboy/ssh-action@master
-  with:
-    # ...
-    script: |
-      cd /app/your-app-name
-      export DB_USER="${{ secrets.DB_USER }}"
-      export DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
-      export DB_NAME="${{ secrets.DB_NAME }}"
-      export DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}"
-      ./scripts/deploy.sh ${{ github.sha }}
+```bash
+./scripts/deploy.sh v1.0 \
+  --app-name=your-app-name \
+  --database-url="postgresql://dbuser:dbpassword@postgres:5432/appdb"
 ```
 
 3. For database migrations, create a plugin on your server:
@@ -574,7 +698,7 @@ server {
 |-------|----------|
 | Health check failing | Check logs with `docker-compose -p your-app-blue logs` |
 | Nginx not routing | Check generated config with `cat nginx.conf` |
-| Environment variables not passing | Verify they're exported before running deploy.sh |
+| Environment variables not passing | Verify parameter values in deployment command |
 | Database connection failing | Check network settings and credentials |
 
 ### Diagnosing Problems
@@ -606,7 +730,7 @@ If things go wrong, you can manually reset:
 cd /app/your-app-name
 
 # Stop all environments
-./scripts/cleanup.sh --all
+./scripts/cleanup.sh --app-name=your-app-name --all
 
 # Or manually:
 docker-compose -p your-app-blue down
@@ -616,5 +740,5 @@ docker-compose -p your-app-green down
 rm -f nginx.conf .env.blue .env.green docker-compose.blue.yml docker-compose.green.yml
 
 # Start from scratch
-./scripts/deploy.sh your-version
+./scripts/deploy.sh your-version --app-name=your-app-name
 ```

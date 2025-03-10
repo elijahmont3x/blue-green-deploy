@@ -12,12 +12,12 @@ http {
     keepalive_timeout  65;
     
     upstream backend {
-        server {{APP_NAME}}-blue-backend-api-1:3000 weight={{BLUE_WEIGHT}};
-        server {{APP_NAME}}-green-backend-api-1:3000 weight={{GREEN_WEIGHT}};
+        server APP_NAME-blue-backend-api-1:3000 weight=BLUE_WEIGHT;
+        server APP_NAME-green-backend-api-1:3000 weight=GREEN_WEIGHT;
     }
 
     server {
-        listen {{NGINX_PORT}};
+        listen NGINX_PORT;
         
         location / {
             proxy_pass http://backend;

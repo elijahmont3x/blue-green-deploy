@@ -19,5 +19,5 @@ services:
           memory: 1G
 
   nginx:
-    # In production, nginx container needs a specific name to avoid conflicts
-    container_name: {{APP_NAME}}-nginx-{{ENV_NAME}}
+    # Environment-specific container name to avoid conflicts
+    container_name: ${APP_NAME}-nginx-{{ENV_NAME}}

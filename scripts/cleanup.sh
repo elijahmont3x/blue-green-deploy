@@ -6,11 +6,11 @@
 #   ./cleanup.sh [OPTIONS]
 #
 # Options:
-#   --all         : Clean up everything including current active environment
-#   --failed-only : Clean up only failed deployments
-#   --old-only    : Clean up only old, inactive environments
-#   --dry-run     : Only show what would be cleaned up without actually removing anything
-#   --config=X    : Use alternate config file (default: config.env)
+#   --app-name=NAME       Application name
+#   --all                 Clean up everything including current active environment
+#   --failed-only         Clean up only failed deployments
+#   --old-only            Clean up only old, inactive environments
+#   --dry-run             Only show what would be cleaned without actually removing anything
 
 set -euo pipefail
 
@@ -18,44 +18,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source utility functions
-source "$SCRIPT_DIR/common.sh"
+source "$SCRIPT_DIR/utils.sh"
 
-# Parse arguments
-CLEAN_ALL=false
-CLEAN_FAILED=false
-CLEAN_OLD=false
-DRY_RUN=false
-CONFIG_FILE="config.env"
-
-for arg in "$@"; do
-  case $arg in
-    --all)
-      CLEAN_ALL=true
-      shift
-      ;;
-    --failed-only)
-      CLEAN_FAILED=true
-      shift
-      ;;
-    --old-only)
-      CLEAN_OLD=true
-      shift
-      ;;
-    --dry-run)
-      DRY_RUN=true
-      shift
-      ;;
-    --config=*)
-      CONFIG_FILE="${arg#*=}"
-      shift
-      ;;
-    *)
-      # Unknown option
-      log_error "Unknown option: $arg"
-      exit 1
-      ;;
-  esac
-done
+# Parse command-line parameters
+parse_parameters "$@" || {
+  log_error "Invalid parameters"
+  exit 1
+}
 
 # Default behavior if no option specified
 if [ "$CLEAN_ALL" = false ] && [ "$CLEAN_FAILED" = false ] && [ "$CLEAN_OLD" = false ]; then
@@ -63,61 +32,33 @@ if [ "$CLEAN_ALL" = false ] && [ "$CLEAN_FAILED" = false ] && [ "$CLEAN_OLD" = f
   CLEAN_OLD=true
 fi
 
-# Load configuration
-load_config "$CONFIG_FILE"
-
-# Set defaults if not provided
-APP_NAME=${APP_NAME:-"app"}
-
-log_info "Starting comprehensive environment cleanup"
+log_info "Starting comprehensive environment cleanup for $APP_NAME"
 if [ "$DRY_RUN" = true ]; then
   log_info "DRY RUN MODE: Only showing what would be cleaned up"
 fi
 
-# Function to run command conditionally in dry run mode
-run_cmd() {
-  if [ "$DRY_RUN" = true ]; then
-    log_info "Would run: $*"
-  else
-    log_info "Running: $*"
-    "$@"
+# Identify active environment
+identify_active_environment() {
+  if docker ps --format "{{.Names}}" | grep -q "${APP_NAME}-blue"; then
+    if grep -q "${APP_NAME}-blue" nginx.conf 2>/dev/null; then
+      echo "blue"
+      return 0
+    fi
   fi
-}
-
-# Identify environments
-list_environments() {
-  docker ps -a --format "{{.Names}}" | grep -E "${APP_NAME}-(blue|green)" | \
-    grep -o "${APP_NAME}-\(blue\|green\)" | sort -u || echo ""
-}
-
-# Determine which environment is active
-get_active_environment() {
-  if grep -q "${APP_NAME}-blue" nginx.conf 2>/dev/null; then
-    echo "blue"
-  elif grep -q "${APP_NAME}-green" nginx.conf 2>/dev/null; then
-    echo "green"
-  else
-    echo ""  # No active environment found
-  fi
-}
-
-# Clean a specific environment
-clean_environment() {
-  local env_name="$1"
-  log_info "Cleaning environment $env_name"
   
-  DOCKER_COMPOSE=$(get_docker_compose_cmd)
-  
-  if [ "$DRY_RUN" = false ]; then
-    $DOCKER_COMPOSE -p "${APP_NAME}-$env_name" down --remove-orphans || log_warning "Failed to clean up environment $env_name"
-    rm -f ".env.$env_name" || log_warning "Failed to remove .env.$env_name"
-    rm -f "docker-compose.$env_name.yml" || log_warning "Failed to remove docker-compose.$env_name.yml"
-  else
-    log_info "Would clean up environment $env_name"
+  if docker ps --format "{{.Names}}" | grep -q "${APP_NAME}-green"; then
+    if grep -q "${APP_NAME}-green" nginx.conf 2>/dev/null; then
+      echo "green"
+      return 0
+    fi
   fi
+  
+  echo ""  # No active environment found
+  return 1
 }
 
-ACTIVE_ENV=$(get_active_environment)
+# Get active environment
+ACTIVE_ENV=$(identify_active_environment)
 if [ -z "$ACTIVE_ENV" ]; then
   log_warning "No active environment detected"
 else
@@ -125,7 +66,10 @@ else
 fi
 
 # Get a list of all blue/green environments
-ALL_ENVS=$(list_environments | cut -d'-' -f2 || echo "")
+ALL_ENVS=$(docker ps -a --filter "name=${APP_NAME}-blue|${APP_NAME}-green" --format "{{.Names}}" | \
+           grep -o "${APP_NAME}-\(blue\|green\)" | sort -u | sed "s/${APP_NAME}-//g" || echo "")
+
+DOCKER_COMPOSE=$(get_docker_compose_cmd)
 
 # Clean up failed environments (containers in non-running state)
 if [ "$CLEAN_FAILED" = true ]; then
@@ -133,7 +77,7 @@ if [ "$CLEAN_FAILED" = true ]; then
   
   # Find containers in exited or failed state
   FAILED_CONTAINERS=$(docker ps -a --filter "status=exited" --filter "status=dead" \
-                      --filter "name=${APP_NAME}-blue|${APP_NAME}-green" --format "{{.Names}}" || echo "")
+                     --filter "name=${APP_NAME}-blue|${APP_NAME}-green" --format "{{.Names}}" || echo "")
   
   if [ -n "$FAILED_CONTAINERS" ]; then
     log_info "Found failed containers: $FAILED_CONTAINERS"
@@ -165,7 +109,11 @@ if [ "$CLEAN_FAILED" = true ]; then
     
     if [ "$TOTAL_CONTAINERS" -gt 0 ] && [ "$RUNNING_CONTAINERS" -lt "$TOTAL_CONTAINERS" ]; then
       log_warning "Environment $env_name has partially failed deployment (Running: $RUNNING_CONTAINERS/$TOTAL_CONTAINERS)"
-      clean_environment "$env_name"
+      
+      run_cmd $DOCKER_COMPOSE -p "${APP_NAME}-$env_name" down --remove-orphans || \
+        log_warning "Failed to clean up environment $env_name"
+      run_cmd rm -f ".env.$env_name" || log_warning "Failed to remove .env.$env_name"
+      run_cmd rm -f "docker-compose.$env_name.yml" || log_warning "Failed to remove docker-compose.$env_name.yml"
     fi
   done
 fi
@@ -182,7 +130,12 @@ if [ "$CLEAN_OLD" = true ]; then
     
     # If environment is not active or we're cleaning everything
     if [ "$env_name" != "$ACTIVE_ENV" ] || [ "$CLEAN_ALL" = true ]; then
-      clean_environment "$env_name"
+      log_info "Cleaning up environment $env_name"
+      
+      run_cmd $DOCKER_COMPOSE -p "${APP_NAME}-$env_name" down --remove-orphans || \
+        log_warning "Failed to clean up environment $env_name"
+      run_cmd rm -f ".env.$env_name" || log_warning "Failed to remove .env.$env_name"
+      run_cmd rm -f "docker-compose.$env_name.yml" || log_warning "Failed to remove docker-compose.$env_name.yml"
     fi
   done
 fi
@@ -192,13 +145,13 @@ if [ "$DRY_RUN" = false ]; then
   log_info "Cleaning up unused Docker resources..."
   
   # Prune images older than 24 hours
-  run_cmd docker image prune -af --filter "until=24h"
+  run_cmd docker image prune -af --filter "until=24h" || log_warning "Failed to prune old images"
   
   # Prune unused volumes
-  run_cmd docker volume prune -f
+  run_cmd docker volume prune -f || log_warning "Failed to prune volumes"
   
   # Prune unused networks
-  run_cmd docker network prune -f
+  run_cmd docker network prune -f || log_warning "Failed to prune networks"
 else
   log_info "Would clean up unused Docker resources (images, volumes, networks)"
 fi
