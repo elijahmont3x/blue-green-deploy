@@ -143,17 +143,17 @@ flowchart TD
     classDef decision fill:#FFD700,stroke:#B8860B,color:black,stroke-width:2px
     
     %% Nodes
-    A["`**Build & Push**Docker Image`"] --> B["`**Deploy**to Inactive Environment`"]
-    B --> C{"`**Health Checks**Application Ready?`"}
-    C -->|Pass| D["`**Traffic Shift**10% to New Environment`"]
-    C -->|Fail| E["`**Abort**Deployment Failed`"]
-    D --> F["`**Traffic Shift**50% to New Environment`"]
-    F --> G["`**Traffic Shift**90% to New Environment`"]
-    G --> H{"`**Verification**All Systems Go?`"}
-    H -->|Yes| I["`**Cutover**100% Traffic to New`"]
-    H -->|No| J["`**Rollback**Revert to Original`"]
-    I --> K["`**Cleanup**Stop Old Environment`"]
-    J --> L["`**Revert**Shift Traffic Back`"]
+    A["`**Build & Push**<br>Docker Image`"] --> B["`**Deploy**<br>To Inactive Environment`"]
+    B --> C{"`**Health Checks**<br>Application Ready?`"}
+    C -->|Pass| D["`**Traffic Shift**<br>10% to New Environment`"]
+    C -->|Fail| E["`**Abort**<br>Deployment Failed`"]
+    D --> F["`**Traffic Shift**<br>50% to New Environment`"]
+    F --> G["`**Traffic Shift**<br>90% to New Environment`"]
+    G --> H{"`**Verification**<br>All Systems Go?`"}
+    H -->|Yes| I["`**Cutover**<br>100% Traffic to New`"]
+    H -->|No| J["`**Rollback**<br>Revert to Original`"]
+    I --> K["`**Cleanup**<br>Stop Old Environment`"]
+    J --> L["`**Revert**<br>Shift Traffic Back`"]
     
     %% Apply classes
     class A,B process
