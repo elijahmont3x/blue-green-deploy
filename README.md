@@ -187,7 +187,7 @@ mkdir -p /app/your-app-name
 cd /app/your-app-name
 
 # Download the deployment toolkit
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts
 ./install.sh your-app-name .
@@ -280,25 +280,6 @@ def health_check():
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 ```
 
-#### Java (Spring Boot) Example:
-
-Spring Boot has built-in health checks. Add this dependency:
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-actuator</artifactId>
-</dependency>
-```
-
-And configure in application.properties:
-```
-management.endpoints.web.exposure.include=health
-management.endpoint.health.show-details=always
-```
-
-This will expose a `/actuator/health` endpoint.
-
 ## Deployment Workflow
 
 Once the system is installed on your server, follow this workflow:
@@ -354,7 +335,7 @@ cd /app/your-app-name
 
 ## Configuration Approach
 
-### Command-Line Parameters (Ideal Approach)
+### Command-Line Parameters
 
 The ideal approach is to pass configuration directly as parameters to the deployment scripts:
 
@@ -515,7 +496,7 @@ jobs:
           push: true
           tags: username/your-app:${{ github.sha }}
       
-      # Copy configuration files to server
+      # Copy configuration files to server (Default)
       - name: Copy configuration files to server
         uses: appleboy/scp-action@master
         with:
@@ -573,7 +554,7 @@ An important consideration is how `docker-compose.yml` and `Dockerfile` get upda
 
 ### Approaches for Updating Configuration Files
 
-1. **Automatic with Every Deployment** (Recommended)
+1. **Automatic with Every Deployment** (Recommended, used by default)
    - Copy files to the server with each deployment
    - Ensures your server always has the latest configuration
    - Simple and reliable approach
@@ -588,7 +569,7 @@ An important consideration is how `docker-compose.yml` and `Dockerfile` get upda
    - Not recommended for most teams
    - Prone to forgetting updates
 
-### Example: Automatic File Updates with GitHub Actions
+### Snippet: Automatic File Updates with GitHub Actions
 
 ```yaml
 # In your GitHub Actions workflow
