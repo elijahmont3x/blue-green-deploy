@@ -9,8 +9,10 @@ This is **not** an application, but a collection of deployment scripts and confi
 ## Table of Contents
 
 - [Overview](#overview)
+- [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Server Installation](#server-installation)
+- [Application Health Check Requirements](#application-health-check-requirements)
 - [Deployment Workflow](#deployment-workflow)
 - [Configuration Approach](#configuration-approach)
 - [Command Reference](#command-reference)
@@ -18,6 +20,7 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Handling Configuration File Updates](#handling-configuration-file-updates)
 - [Supporting Multiple Applications](#supporting-multiple-applications)
 - [Integrating Backend Services](#integrating-backend-services)
+- [Plugin System](#plugin-system)
 - [Advanced Usage](#advanced-usage)
 - [Troubleshooting](#troubleshooting)
 
@@ -41,6 +44,47 @@ Key features:
 - Automated health checks
 - Simple rollback process
 - Environment cleanup tools
+
+## Quick Start
+
+Get up and running quickly with these steps:
+
+1. **Install on your server**:
+   ```bash
+   # SSH into your server
+   ssh user@your-server-ip
+   
+   # Create directory and download toolkit
+   mkdir -p /app/myapp && cd /app/myapp
+   curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+   
+   # Install deployment scripts
+   ./install.sh myapp .
+   ```
+
+2. **Upload your application files**:
+   ```bash
+   # From your local machine
+   scp docker-compose.yml user@your-server-ip:/app/myapp/
+   scp Dockerfile user@your-server-ip:/app/myapp/
+   ```
+
+3. **Deploy your application**:
+   ```bash
+   # On your server
+   cd /app/myapp
+   
+   # Deploy version 1.0.0
+   ./scripts/deploy.sh v1.0.0 --app-name=myapp --image-repo=yourusername/myapp
+   ```
+
+4. **Complete the cutover**:
+   ```bash
+   # If using --no-shift option or manual control
+   ./scripts/cutover.sh green --app-name=myapp
+   ```
+
+That's it! Your application is now deployed with zero downtime using blue/green deployment.
 
 ## How It Works
 
@@ -69,6 +113,42 @@ Before:                         After:
                          └───────────┘       └───────────┘
 ```
 
+### Deployment Flow Diagram
+
+The deployment process follows this flow:
+
+```mermaid
+flowchart TD
+    %% Styling and layout
+    classDef primary fill:#4169E1,stroke:#0D47A1,color:white,stroke-width:2px
+    classDef secondary fill:#FF6347,stroke:#B22222,color:white,stroke-width:2px
+    classDef success fill:#2E8B57,stroke:#006400,color:white,stroke-width:2px
+    classDef warning fill:#FF8C00,stroke:#D2691E,color:white,stroke-width:2px
+    classDef process fill:#9370DB,stroke:#4B0082,color:white,stroke-width:2px
+    classDef decision fill:#FFD700,stroke:#B8860B,color:black,stroke-width:2px
+    
+    %% Nodes
+    A["`**Build & Push**Docker Image`"] --> B["`**Deploy**to Inactive Environment`"]
+    B --> C{"`**Health Checks**Application Ready?`"}
+    C -->|Pass| D["`**Traffic Shift**10% to New Environment`"]
+    C -->|Fail| E["`**Abort**Deployment Failed`"]
+    D --> F["`**Traffic Shift**50% to New Environment`"]
+    F --> G["`**Traffic Shift**90% to New Environment`"]
+    G --> H{"`**Verification**All Systems Go?`"}
+    H -->|Yes| I["`**Cutover**100% Traffic to New`"]
+    H -->|No| J["`**Rollback**Revert to Original`"]
+    I --> K["`**Cleanup**Stop Old Environment`"]
+    J --> L["`**Revert**Shift Traffic Back`"]
+    
+    %% Apply classes
+    class A,B process
+    class C,H decision
+    class D,F,G primary
+    class E,J secondary
+    class I,K success
+    class L warning
+```
+
 ## Server Installation
 
 ### Prerequisites
@@ -92,7 +172,7 @@ mkdir -p /app/your-app-name
 cd /app/your-app-name
 
 # Download the deployment toolkit
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts
 ./install.sh your-app-name .
@@ -130,98 +210,79 @@ scp Dockerfile user@your-server-ip:/app/your-app-name/
 
 Alternatively, your CI/CD pipeline can copy these files during deployment.
 
-## Configuration Approach
+## Application Health Check Requirements
 
-### Command-Line Parameters
+Your application **must have a health check endpoint** for the blue/green deployment to work properly. This endpoint should:
 
-The ideal approach is to pass configuration directly as parameters to the deployment scripts:
+1. Return a successful status code (200) when the application is healthy
+2. Return an error status code when the application is not healthy
+3. Check internal dependencies (database, cache, etc.) if appropriate
 
-```yaml
-# In GitHub Actions workflow
-- name: Deploy
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/your-app-name
-      ./scripts/deploy.sh ${{ github.sha }} \
-        --app-name=${{ vars.APP_NAME }} \
-        --image-repo=${{ vars.IMAGE_REPO }} \
-        --nginx-port=${{ vars.NGINX_PORT }} \
-        --blue-port=${{ vars.BLUE_PORT }} \
-        --green-port=${{ vars.GREEN_PORT }} \
-        --database-url="${{ secrets.DATABASE_URL }}" \
-        --api-key="${{ secrets.API_KEY }}"
+### Example Health Check Implementations
+
+#### Node.js (Express) Example:
+
+```javascript
+// health.js
+const express = require('express');
+const router = express.Router();
+
+router.get('/', async (req, res) => {
+  try {
+    // Optional: Check database connection
+    // await db.query('SELECT 1');
+    
+    // Optional: Check cache connection
+    // await redis.ping();
+    
+    res.status(200).json({ status: 'healthy' });
+  } catch (error) {
+    res.status(500).json({ status: 'unhealthy', error: error.message });
+  }
+});
+
+module.exports = router;
+
+// app.js
+app.use('/health', require('./health'));
 ```
 
-Benefits of this approach:
-- No need to create or maintain config files
-- Explicit parameters make it clear what values are being passed
-- Better traceability in logs and deployment history
-- Easier to test different configurations
+#### Python (Flask) Example:
 
-To implement this approach, update your deployment scripts to accept command-line parameters:
+```python
+from flask import Flask, jsonify
 
-```bash
-#!/bin/bash
-# deploy.sh with parameter support
+app = Flask(__name__)
 
-# Default values
-APP_NAME="app"
-NGINX_PORT=80
-BLUE_PORT=8081
-GREEN_PORT=8082
-
-# Parse command-line arguments
-VERSION=$1
-shift
-
-while [[ "$#" -gt 0 ]]; do
-  case $1 in
-    --app-name=*) APP_NAME="${1#*=}" ;;
-    --image-repo=*) IMAGE_REPO="${1#*=}" ;;
-    --nginx-port=*) NGINX_PORT="${1#*=}" ;;
-    --blue-port=*) BLUE_PORT="${1#*=}" ;;
-    --green-port=*) GREEN_PORT="${1#*=}" ;;
-    --database-url=*) DATABASE_URL="${1#*=}" ;;
-    --api-key=*) API_KEY="${1#*=}" ;;
-    *) echo "Unknown parameter: $1"; exit 1 ;;
-  esac
-  shift
-done
-
-# Use the parameters directly in your deployment logic
-echo "Deploying version $VERSION with configuration:"
-echo "  App Name: $APP_NAME"
-echo "  Nginx Port: $NGINX_PORT"
-# ...rest of the deployment script...
+@app.route('/health')
+def health_check():
+    try:
+        # Optional: Check database connection
+        # db.session.execute('SELECT 1')
+        
+        return jsonify({"status": "healthy"}), 200
+    except Exception as e:
+        return jsonify({"status": "unhealthy", "error": str(e)}), 500
 ```
 
-This approach also makes it easier to run deployments locally with different configurations:
+#### Java (Spring Boot) Example:
 
-```bash
-./scripts/deploy.sh v1.0 --app-name=test-app --nginx-port=8080 --database-url=postgres://localhost/testdb
+Spring Boot has built-in health checks. Add this dependency:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
 ```
 
-### Configuration Values to Consider
+And configure in application.properties:
+```
+management.endpoints.web.exposure.include=health
+management.endpoint.health.show-details=always
+```
 
-Whether using command-line parameters or any other approach, these are the key configuration values to manage:
-
-**Infrastructure Settings**:
-- `APP_NAME`: Your application name (used as prefix for containers)
-- `IMAGE_REPO`: Docker image repository without tag
-- `NGINX_PORT`: External port for Nginx load balancer
-- `BLUE_PORT`: Internal port for blue environment
-- `GREEN_PORT`: Internal port for green environment
-- `HEALTH_ENDPOINT`: Health check URL path
-
-**Sensitive Data**:
-- `DATABASE_URL`: Database connection string
-- `API_KEY`: API keys for your application
-- `REDIS_URL`: Redis connection string
-- Other application-specific secrets
+This will expose a `/actuator/health` endpoint.
 
 ## Deployment Workflow
 
@@ -275,6 +336,67 @@ cd /app/your-app-name
 # Rollback to the previous version
 ./scripts/rollback.sh --app-name=your-app-name
 ```
+
+## Configuration Approach
+
+### Command-Line Parameters (Ideal Approach)
+
+The ideal approach is to pass configuration directly as parameters to the deployment scripts:
+
+```yaml
+# In GitHub Actions workflow
+- name: Deploy
+  uses: appleboy/ssh-action@master
+  with:
+    host: ${{ secrets.SERVER_HOST }}
+    username: ${{ secrets.SERVER_USER }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    script: |
+      cd /app/your-app-name
+      ./scripts/deploy.sh ${{ github.sha }} \
+        --app-name=${{ vars.APP_NAME }} \
+        --image-repo=${{ vars.IMAGE_REPO }} \
+        --nginx-port=${{ vars.NGINX_PORT }} \
+        --blue-port=${{ vars.BLUE_PORT }} \
+        --green-port=${{ vars.GREEN_PORT }} \
+        --database-url="${{ secrets.DATABASE_URL }}" \
+        --api-key="${{ secrets.API_KEY }}"
+```
+
+Benefits of this approach:
+- No need to create or maintain config files
+- Explicit parameters make it clear what values are being passed
+- Better traceability in logs and deployment history
+- Easier to test different configurations
+### Environment Files and Docker Compose
+
+While you provide configuration via command-line parameters, the system still generates temporary environment files (`.env.blue` and `.env.green`) for Docker Compose to use. This is because Docker Compose requires environment files to properly isolate environments.
+
+**This is normal and expected behavior** - these files are:
+- Automatically generated based on your command-line parameters
+- Isolated to each environment (blue/green)
+- Cleaned up during environment cleanup
+- Not meant to be manually edited
+
+You don't need to manage these files directly - just use the command-line parameters and the system will handle the rest.
+
+### Configuration Values to Consider
+
+Whether using command-line parameters or any other approach, these are the key configuration values to manage:
+
+**Infrastructure Settings**:
+- `APP_NAME`: Your application name (used as prefix for containers)
+- `IMAGE_REPO`: Docker image repository without tag
+- `NGINX_PORT`: External port for Nginx load balancer
+- `BLUE_PORT`: Internal port for blue environment
+- `GREEN_PORT`: Internal port for green environment
+- `HEALTH_ENDPOINT`: Health check URL path
+
+**Sensitive Data**:
+- `DATABASE_URL`: Database connection string
+- `API_KEY`: API keys for your application
+- `REDIS_URL`: Redis connection string
+- Other application-specific secrets
 
 ## Command Reference
 
@@ -623,42 +745,163 @@ EOL
 chmod +x /app/your-app-name/plugins/db-migrate.sh
 ```
 
-## Advanced Usage
+## Plugin System
 
-### Plugin System
+The plugin system allows you to extend the deployment process with custom hooks. Plugins are shell scripts placed in the `plugins/` directory that define special functions that run at specific points in the deployment process.
 
-Create custom plugins on your server to extend the deployment process:
+### Available Hooks
+
+- `hook_pre_deploy`: Runs before deployment starts
+- `hook_post_deploy`: Runs after deployment completes
+- `hook_pre_cutover`: Runs before traffic cutover
+- `hook_post_cutover`: Runs after traffic cutover
+- `hook_pre_rollback`: Runs before rollback
+- `hook_post_rollback`: Runs after rollback
+
+### Real-World Plugin Examples
+
+#### Slack Notification Plugin
 
 ```bash
-# On your server
-mkdir -p /app/your-app-name/plugins
-cat > /app/your-app-name/plugins/notifications.sh << 'EOL'
 #!/bin/bash
+# plugins/slack-notifications.sh
+
+# Slack webhook URL (set during deployment)
+# Example: ./scripts/deploy.sh v1.0 --app-name=myapp --slack-webhook="https://hooks.slack.com/..."
 
 hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
-  # Send notification
-  curl -X POST \
+  if [ -z "${SLACK_WEBHOOK:-}" ]; then
+    log_info "Skipping Slack notification (SLACK_WEBHOOK not set)"
+    return 0
+  fi
+  
+  log_info "Sending deployment notification to Slack"
+  
+  curl -s -X POST \
     -H "Content-Type: application/json" \
-    -d "{\"text\":\"Deployed version $version to $env_name\"}" \
-    "https://hooks.slack.com/services/your/webhook/url"
+    -d "{\"text\":\"🚀 *Deployment Successful*\n• Application: ${APP_NAME}\n• Version: ${version}\n• Environment: ${env_name}\"}" \
+    "${SLACK_WEBHOOK}"
+    
+  return $?
+}
+
+hook_post_rollback() {
+  local rollback_env="$1"
+  
+  if [ -z "${SLACK_WEBHOOK:-}" ]; then
+    return 0
+  fi
+  
+  log_info "Sending rollback notification to Slack"
+  
+  curl -s -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"text\":\"⚠️ *Rollback Performed*\n• Application: ${APP_NAME}\n• Environment: ${rollback_env}\"}" \
+    "${SLACK_WEBHOOK}"
+    
+  return $?
+}
+```
+
+#### Database Backup Plugin
+
+```bash
+#!/bin/bash
+# plugins/db-backup.sh
+
+hook_pre_deploy() {
+  local version="$1"
+  
+  if [ -z "${DATABASE_URL:-}" ]; then
+    log_info "Skipping database backup (DATABASE_URL not set)"
+    return 0
+  fi
+  
+  # Extract DB info from connection string
+  local db_name=$(echo "$DATABASE_URL" | sed -n 's/.*\/\([^?]*\).*/\1/p')
+  
+  if [ -z "$db_name" ]; then
+    log_warning "Could not extract database name from DATABASE_URL"
+    return 0
+  fi
+  
+  log_info "Creating database backup before deployment"
+  
+  # Create backup directory
+  ensure_directory "backups"
+  
+  # Generate backup filename with timestamp
+  local backup_file="backups/${APP_NAME}-${db_name}-$(date +%Y%m%d-%H%M%S).sql"
+  
+  # Run backup
+  docker-compose exec -T postgres pg_dump -U "${DB_USER:-postgres}" "${db_name}" > "${backup_file}"
+  
+  if [ $? -eq 0 ]; then
+    log_success "Database backup created: ${backup_file}"
+  else
+    log_warning "Database backup failed"
+  fi
   
   return 0
 }
-EOL
-
-chmod +x /app/your-app-name/plugins/notifications.sh
 ```
 
-Available hooks:
-- `hook_pre_deploy`: Before deployment starts
-- `hook_post_deploy`: After deployment completes
-- `hook_pre_cutover`: Before traffic cutover
-- `hook_post_cutover`: After traffic cutover
-- `hook_pre_rollback`: Before rollback
-- `hook_post_rollback`: After rollback
+#### Performance Test Plugin
+
+```bash
+#!/bin/bash
+# plugins/perf-test.sh
+
+hook_post_deploy() {
+  local version="$1"
+  local env_name="$2"
+  local port=$([[ "$env_name" == "blue" ]] && echo "${BLUE_PORT}" || echo "${GREEN_PORT}")
+  
+  log_info "Running basic performance test on new deployment"
+  
+  # Run simple load test using Apache Bench (ab)
+  if command -v ab > /dev/null; then
+    ab -n 100 -c 10 "http://localhost:${port}${HEALTH_ENDPOINT}" > "perf-test-${version}.txt"
+    
+    # Extract results
+    local rps=$(grep "Requests per second" "perf-test-${version}.txt" | awk '{print $4}')
+    local time=$(grep "Time per request" "perf-test-${version}.txt" | head -n 1 | awk '{print $4}')
+    
+    log_info "Performance test results: ${rps} req/sec, ${time}ms per request"
+  else
+    log_warning "Apache Bench (ab) not found, skipping performance test"
+  fi
+  
+  return 0
+}
+```
+
+### Creating Your Own Plugins
+
+1. Create a bash script in the plugins directory:
+   ```bash
+   touch plugins/my-plugin.sh
+   chmod +x plugins/my-plugin.sh
+   ```
+
+2. Define hook functions in your script:
+   ```bash
+   #!/bin/bash
+   
+   hook_pre_deploy() {
+     local version="$1"
+     log_info "Running pre-deployment tasks for version $version"
+     # Your custom code here
+     return 0  # Return 0 for success, non-zero for failure
+   }
+   ```
+
+3. The hooks will automatically be called during the deployment process.
+
+## Advanced Usage
 
 ### Customizing Nginx Configuration
 
