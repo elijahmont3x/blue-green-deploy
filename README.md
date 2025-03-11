@@ -97,20 +97,35 @@ This system is installed on your production server and works with your existing 
 
 Here's how the system modifies your server infrastructure:
 
-```
-Before:                         After:
-┌─────────────┐                 ┌─────────────┐
-│   Docker    │                 │    Nginx    │
-│ Application │                 │ Load Balancer│
-└─────────────┘                 └───────┬─────┘
-                                       / \
-                                      /   \
-                             ┌───────┘     └───────┐
-                             │                     │
-                         ┌───────────┐       ┌───────────┐
-                         │   Blue    │       │   Green   │
-                         │Environment│       │Environment│
-                         └───────────┘       └───────────┘
+### How It Works
+
+This system modifies your infrastructure from a single application to a blue/green deployment model:
+
+```mermaid
+flowchart LR
+    subgraph before [" Before "]
+        direction TB
+        A["`**Docker**<br>Application`"]
+    end
+    
+    before -.- after
+    
+    subgraph after [" After "]
+        direction TB
+        B["`**Nginx**<br>Load Balancer`"]
+        C["`**Blue**<br>Environment`"]
+        D["`**Green**<br>Environment`"]
+        B --> C
+        B --> D
+    end
+    
+    classDef container fill:#f8f9fa,stroke:#343a40,stroke-width:2px,rx:5,ry:5
+    classDef blue fill:#cce5ff,stroke:#004085,stroke-width:2px,rx:5,ry:5
+    classDef green fill:#d4edda,stroke:#155724,stroke-width:2px,rx:5,ry:5
+    
+    class A,B container
+    class C blue
+    class D green
 ```
 
 ### Deployment Flow Diagram
