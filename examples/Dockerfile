@@ -4,11 +4,16 @@ WORKDIR /app
 
 RUN apk add --no-cache curl
 
-# Add a non-root user
+# Add a non-root user - IMPORTANT SECURITY FEATURE
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-COPY package.json package-lock.json* ./
+# Example with npm (generic)
+COPY package*.json ./
 RUN npm ci --only=production
+
+# Example with pnpm (commented)
+# COPY package.json pnpm-lock.yaml ./
+# RUN corepack enable && corepack prepare pnpm@latest --activate && pnpm install --prod
 
 COPY . .
 RUN npm run build && \
@@ -17,7 +22,7 @@ RUN npm run build && \
 
 ENV NODE_ENV=production
 
-# Switch to non-root user
+# Switch to non-root user - IMPORTANT SECURITY FEATURE
 USER appuser
 
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=3 \

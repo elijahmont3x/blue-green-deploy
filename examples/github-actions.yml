@@ -1,4 +1,4 @@
-name: CI/CD Pipeline with Blue/Green Deployment
+name: Backend CI/CD with Blue-Green Deployment
 
 on:
   push:
@@ -22,8 +22,10 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     env:
-      APP_API_KEY: ${{ vars.APP_API_KEY }}
-      APP_DEBUG: ${{ vars.APP_DEBUG }}
+      APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
+      APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
+      APP_SECRET_KEY: ${{ vars.APP_SECRET_KEY }}
+      APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
     outputs:
       version: ${{ steps.versioning.outputs.version }}
     steps:
@@ -31,17 +33,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
       - uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
+          cache: 'pnpm'
 
       - name: Version
         id: versioning
         run: echo "version=$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
 
-      - run: npm ci
-      - run: npm test
+      - run: pnpm install
+      - run: pnpm test
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -59,13 +65,13 @@ jobs:
           context: .
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.versioning.outputs.version }}
+            ghcr.io/example/backend:latest
+            ghcr.io/example/backend:${{ steps.versioning.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.created=${{ steps.versioning.outputs.version }}
+            org.opencontainers.image.visibility=private
 
   deploy:
     needs: test-and-build
@@ -74,39 +80,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Make scripts executable
-        run: chmod +x ./scripts/*.sh
-
-      - name: Copy configuration files to server
+      # Step 1: Copy deployment scripts to server if not already installed
+      - name: Copy deployment scripts to server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: 'docker-compose.yml,scripts/*.sh,config/templates/*.template'
-          target: '/app/myapp'
+          source: "scripts/**,config/**"
+          target: '/app/backend'
           strip_components: 0
+          overwrite: true
 
-      - name: Deploy to Production
-        uses: appleboy/ssh-action@master
-        env:
-          VERSION: ${{ needs.test-and-build.outputs.version }}
-          IMAGE: ghcr.io/${{ github.repository }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_USERNAME: ${{ github.repository_owner }}
-          APP_API_KEY: ${{ vars.APP_API_KEY }}
-          APP_DEBUG: ${{ vars.APP_DEBUG }}
+      # Step 2: Copy application files to server
+      - name: Copy application files to server
+        uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: VERSION,IMAGE,GITHUB_TOKEN,GITHUB_USERNAME,APP_API_KEY,APP_DEBUG
+          source: "docker-compose.yml,Dockerfile"
+          target: '/app/backend'
+          strip_components: 0
+
+      # Step 3: Deploy to Production
+      - name: Deploy to Production
+        uses: appleboy/ssh-action@master
+        env:
+          VERSION: ${{ needs.test-and-build.outputs.version }}
+          IMAGE_REPO: "ghcr.io/example/backend"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_USERNAME: ${{ github.repository_owner }}
+          # Pass through all application-specific environment variables
+          APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
+          APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
+          APP_SECRET_KEY: ${{ vars.APP_SECRET_KEY }}
+          APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: VERSION,IMAGE_REPO,GITHUB_TOKEN,GITHUB_USERNAME,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
           script: |
-            cd /app/myapp
+            cd /app/backend
+            
+            # Make scripts executable
+            chmod +x ./scripts/*.sh
+            
+            # Login to GitHub Container Registry for private images
+            echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_USERNAME --password-stdin
+            
+            # Export application-specific environment variables BEFORE deployment
+            # So they're available to the deployment process
+            export APP_API_ENDPOINT="$APP_API_ENDPOINT"
+            export APP_CONFIG_VALUE="$APP_CONFIG_VALUE"
+            export APP_SECRET_KEY="$APP_SECRET_KEY"
+            export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
+            
             # Clean up any failed deployments first
-            ./scripts/cleanup.sh --failed-only
-            # Run the deployment
-            ./scripts/deploy.sh "$VERSION"
+            ./scripts/cleanup.sh --app-name=backend --failed-only
+            
+            # Run the deployment with all application-specific params
+            ./scripts/deploy.sh "$VERSION" \
+              --app-name=backend \
+              --image-repo=$IMAGE_REPO \
+              --nginx-port=80 \
+              --blue-port=8081 \
+              --green-port=8082 \
+              --health-endpoint=/health
 
   cleanup:
     if: github.event_name == 'schedule'
@@ -119,6 +160,6 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /app/myapp
+            cd /app/backend
             # Clean up old inactive environments and failed deployments
-            ./scripts/cleanup.sh
+            ./scripts/cleanup.sh --app-name=backend

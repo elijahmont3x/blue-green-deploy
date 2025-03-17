@@ -526,27 +526,92 @@ jobs:
               --redis-url="${{ secrets.REDIS_URL }}"
 ```
 
-### Required GitHub Secrets/Variables
+### Backend Application Example
 
-Add these to your GitHub repository (Settings → Secrets and variables → Actions):
+For Node.js backend applications using pnpm, here's a more specific example:
 
-**Secrets** (for sensitive information):
-- `SERVER_HOST`: Your server's IP address
-- `SERVER_USER`: SSH username
-- `SSH_PRIVATE_KEY`: Private SSH key for authentication
-- `DOCKER_USERNAME`: Docker Hub username
-- `DOCKER_PASSWORD`: Docker Hub password/token
-- `DATABASE_URL`: Database connection string
-- `API_KEY`: API key for your application
-- `REDIS_URL`: Redis connection string
+```yaml
+name: Backend CI/CD with Blue-Green Deployment
 
-**Variables** (for non-sensitive configuration):
-- `APP_NAME`: Your application name
-- `IMAGE_REPO`: Docker image repository
-- `NGINX_PORT`: Port for Nginx (default: 80)
-- `BLUE_PORT`: Port for blue environment (default: 8081)
-- `GREEN_PORT`: Port for green environment (default: 8082)
-- `HEALTH_ENDPOINT`: Health check endpoint (default: /health)
+on:
+  push:
+    branches: [main]
+  
+jobs:
+  test-and-build:
+    # ...existing build steps...
+    
+  deploy:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Step 1: Copy deployment scripts to server if not already installed
+      - name: Copy deployment scripts to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "scripts/**,config/**"
+          target: '/app/backend'
+          strip_components: 0
+          overwrite: true
+
+      # Step 2: Copy application files to server
+      - name: Copy application files to server
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.yml,Dockerfile"
+          target: '/app/backend'
+          strip_components: 0
+
+      # Step 3: Deploy to Production
+      - name: Deploy to Production
+        uses: appleboy/ssh-action@master
+        env:
+          VERSION: ${{ needs.test-and-build.outputs.version }}
+          IMAGE_REPO: "ghcr.io/yourorg/backend"
+          # Pass through all application-specific environment variables
+          API_KEY: ${{ secrets.API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: VERSION,IMAGE_REPO,API_KEY,DATABASE_URL,ALLOWED_ORIGINS
+          script: |
+            cd /app/backend
+            
+            # Make scripts executable
+            chmod +x ./scripts/*.sh
+            
+            # Login to Container Registry if needed
+            # ...
+            
+            # Export application-specific environment variables BEFORE deployment
+            # So they're available to the deployment process
+            export API_KEY="$API_KEY"
+            export DATABASE_URL="$DATABASE_URL"
+            export ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
+            
+            # Clean up any failed deployments first
+            ./scripts/cleanup.sh --app-name=backend --failed-only
+            
+            # Run the deployment with all application-specific params
+            ./scripts/deploy.sh "$VERSION" \
+              --app-name=backend \
+              --image-repo=$IMAGE_REPO \
+              --nginx-port=80 \
+              --blue-port=8081 \
+              --green-port=8082 \
+              --health-endpoint=/health
+```
 
 ## Handling Configuration File Updates
 
@@ -981,3 +1046,68 @@ rm -f nginx.conf .env.blue .env.green docker-compose.blue.yml docker-compose.gre
 # Start from scratch
 ./scripts/deploy.sh your-version --app-name=your-app-name
 ```
+
+## Docker Security Best Practices
+
+### Running as Non-Root User
+
+It's highly recommended to run your application container as a non-root user for improved security. Here's how to set that up in your Dockerfile:
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache curl
+
+# Add a non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build && \
+    # Set proper ownership
+    chown -R appuser:appgroup /app
+
+ENV NODE_ENV=production
+
+# Switch to non-root user
+USER appuser
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=3 \
+  CMD curl -f http://localhost:3000/health || exit 1
+
+EXPOSE 3000
+CMD ["node", "dist/main"]
+```
+
+Benefits of using a non-root user:
+- Reduces the potential impact of container escape vulnerabilities
+- Follows the principle of least privilege
+- Prevents accidental modification of host files if volumes are mounted incorrectly
+- Complies with security best practices and many platform requirements
+
+### Environment Variable Propagation
+
+Environment variables are automatically captured and propagated to your blue/green environments following these rules:
+
+1. **Explicit parameters**: Variables passed as command-line parameters (like `--database-url`) take highest precedence
+2. **Exported variables**: Any variables exported before running the deployment script are captured
+3. **System-defined patterns**: Variables matching patterns like `DB_*` or `APP_*` are automatically included
+4. **CI/CD variables**: Variables passed via the `env:` section in your CI/CD workflow propagate properly
+
+Example of how to set application-specific variables in your deployment script:
+
+```bash
+# Set these before calling deploy.sh
+export API_KEY="your-api-key"
+export DATABASE_URL="postgresql://user:pass@host/db"
+export REDIS_HOST="redis.example.com"
+
+# These will be automatically propagated to both blue and green environments
+./scripts/deploy.sh v1.0 --app-name=your-app-name
+```
+
+The system will include these variables in the `.env.blue` and `.env.green` files that are used by Docker Compose.

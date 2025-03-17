@@ -24,7 +24,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source utility functions
-source "$SCRIPT_DIR/utils.sh"
+source "$SCRIPT_DIR/common.sh"
 
 # Parse arguments
 if [ $# -lt 1 ]; then
