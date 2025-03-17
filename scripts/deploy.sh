@@ -22,6 +22,7 @@
 #   --redis-url=URL       Redis connection string
 #   --force               Force deployment even if target environment is active
 #   --no-shift            Don't shift traffic automatically (manual cutover)
+#   --project-dir=PATH    Project directory (default: current directory)
 #
 # Examples:
 #   ./deploy.sh v1.0.0 --app-name=myapp --image-repo=myname/myapp
@@ -72,6 +73,12 @@ ensure_docker_running || {
 # Get Docker Compose command
 DOCKER_COMPOSE=$(get_docker_compose_cmd)
 
+# Change to project directory for docker-compose operations
+cd "$PROJECT_DIR" || {
+  log_error "Failed to change to project directory: $PROJECT_DIR"
+  exit 1
+}
+
 # Determine which environment to deploy to (blue or green)
 read CURRENT_ENV TARGET_ENV <<< $(get_environments)
 log_info "Current environment: $CURRENT_ENV, deploying to: $TARGET_ENV"
@@ -97,7 +104,7 @@ create_env_file "$TARGET_ENV" "$TARGET_PORT"
 # Generate environment-specific docker-compose overrides
 TEMPLATE_DIR="${SCRIPT_DIR}/../config/templates"
 DOCKER_COMPOSE_TEMPLATE="${TEMPLATE_DIR}/docker-compose.override.template"
-DOCKER_COMPOSE_OVERRIDE="docker-compose.${TARGET_ENV}.yml"
+DOCKER_COMPOSE_OVERRIDE="${PROJECT_DIR}/docker-compose.${TARGET_ENV}.yml"
 
 if [ -f "$DOCKER_COMPOSE_TEMPLATE" ]; then
   cat "$DOCKER_COMPOSE_TEMPLATE" | \
@@ -128,7 +135,7 @@ fi
 # Start the new environment
 log_info "Starting $TARGET_ENV environment with version $VERSION..."
 $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV --env-file .env.${TARGET_ENV} \
-  -f docker-compose.yml -f "$DOCKER_COMPOSE_OVERRIDE" up -d
+  -f docker-compose.yml -f "docker-compose.${TARGET_ENV}.yml" up -d
 
 if [ $? -ne 0 ]; then
   log_error "Failed to start $TARGET_ENV environment"

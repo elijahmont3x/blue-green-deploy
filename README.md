@@ -54,12 +54,15 @@ Get up and running quickly with these steps:
    # SSH into your server
    ssh user@your-server-ip
    
-   # Create directory and download toolkit
+   # Per-Project Installation (Default)
    mkdir -p /app/myapp && cd /app/myapp
-   curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
    
-   # Install deployment scripts
-   ./install.sh myapp .
+   # Download only the essential deployment files
+   curl -s https://raw.githubusercontent.com/elijahmont3x/blue-green-deploy/main/scripts/install.sh | bash -s myapp
+   
+   # OR Centralized Installation (For managing multiple projects)
+   mkdir -p /apps/your-org/tools/blue-green-deploy && cd /apps/your-org/tools/blue-green-deploy
+   curl -s https://raw.githubusercontent.com/elijahmont3x/blue-green-deploy/main/scripts/install.sh | bash -s your-org centralized
    ```
 
 2. **Upload your application files**:
@@ -71,17 +74,22 @@ Get up and running quickly with these steps:
 
 3. **Deploy your application**:
    ```bash
-   # On your server
+   # For per-project installation
    cd /app/myapp
-   
-   # Deploy version 1.0.0
    ./scripts/deploy.sh v1.0.0 --app-name=myapp --image-repo=yourusername/myapp
+   
+   # OR for centralized installation
+   cd /apps/your-org/tools/blue-green-deploy
+   ./scripts/deploy.sh v1.0.0 --app-name=myapp --project-dir=/apps/your-org/myapp --image-repo=yourusername/myapp
    ```
 
-4. **Complete the cutover**:
+4. **Complete the cutover** (if using --no-shift option or manual control):
    ```bash
-   # If using --no-shift option or manual control
+   # For per-project installation
    ./scripts/cutover.sh green --app-name=myapp
+   
+   # OR for centralized installation
+   ./scripts/cutover.sh green --app-name=myapp --project-dir=/apps/your-org/myapp
    ```
 
 That's it! Your application is now deployed with zero downtime using blue/green deployment.
@@ -189,9 +197,15 @@ cd /app/your-app-name
 # Download the deployment toolkit
 curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 
-# Install the deployment scripts
+# Install the deployment scripts (auto-fixes permissions)
 ./install.sh your-app-name .
 ```
+
+The `install.sh` script will:
+- Auto-fix its own permissions if needed
+- Create only the essential directories needed for deployment
+- Install required deployment scripts and configuration templates 
+- Make all scripts executable
 
 ### Server Directory Structure
 
@@ -406,6 +420,8 @@ The deployment toolkit provides these commands (all run on your server):
 # Options:
 #   --app-name=NAME       Application name
 #   --image-repo=REPO     Docker image repository
+#   --project-dir=PATH    Project directory for centralized deployments
+#   --logs-dir=PATH       Logs directory location
 #   --nginx-port=PORT     Nginx external port
 #   --blue-port=PORT      Blue environment port
 #   --green-port=PORT     Green environment port
@@ -416,7 +432,7 @@ The deployment toolkit provides these commands (all run on your server):
 
 # Examples:
 ./scripts/deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
-./scripts/deploy.sh v1.1 --app-name=myapp --no-shift
+./scripts/deploy.sh v1.1 --app-name=myapp --no-shift --project-dir=/apps/myorg/myapp
 ```
 
 ### Cutover
@@ -426,6 +442,8 @@ The deployment toolkit provides these commands (all run on your server):
 
 # Options:
 #   --app-name=NAME       Application name
+#   --project-dir=PATH    Project directory for centralized deployments
+#   --logs-dir=PATH       Logs directory location
 #   --keep-old            Don't stop the previous environment
 
 # Example:
@@ -526,9 +544,9 @@ jobs:
               --redis-url="${{ secrets.REDIS_URL }}"
 ```
 
-### Backend Application Example
+### Production-Ready Backend Example
 
-For Node.js backend applications using pnpm, here's a more specific example:
+For production-grade Node.js backend applications, here's a complete example that handles permissions, environment variables, and proper script installation:
 
 ```yaml
 name: Backend CI/CD with Blue-Green Deployment
@@ -536,18 +554,24 @@ name: Backend CI/CD with Blue-Green Deployment
 on:
   push:
     branches: [main]
-  
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run cleanup job every day at 2:00 AM UTC
+    - cron: '0 2 * * *'
+
 jobs:
   test-and-build:
-    # ...existing build steps...
+    # ...build and test steps...
     
   deploy:
     needs: test-and-build
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Step 1: Copy deployment scripts to server if not already installed
+      
+      # Copy deployment scripts and configuration templates
       - name: Copy deployment scripts to server
         uses: appleboy/scp-action@master
         with:
@@ -558,8 +582,8 @@ jobs:
           target: '/app/backend'
           strip_components: 0
           overwrite: true
-
-      # Step 2: Copy application files to server
+      
+      # Copy application configuration files
       - name: Copy application files to server
         uses: appleboy/scp-action@master
         with:
@@ -569,41 +593,39 @@ jobs:
           source: "docker-compose.yml,Dockerfile"
           target: '/app/backend'
           strip_components: 0
-
-      # Step 3: Deploy to Production
+      
+      # Deploy to Production
       - name: Deploy to Production
         uses: appleboy/ssh-action@master
         env:
           VERSION: ${{ needs.test-and-build.outputs.version }}
-          IMAGE_REPO: "ghcr.io/yourorg/backend"
-          # Pass through all application-specific environment variables
-          API_KEY: ${{ secrets.API_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS }}
+          IMAGE_REPO: "ghcr.io/example/backend"
+          # Application environment variables
+          APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
+          APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
+          APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: VERSION,IMAGE_REPO,API_KEY,DATABASE_URL,ALLOWED_ORIGINS
+          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
           script: |
             cd /app/backend
             
             # Make scripts executable
             chmod +x ./scripts/*.sh
             
-            # Login to Container Registry if needed
-            # ...
-            
             # Export application-specific environment variables BEFORE deployment
-            # So they're available to the deployment process
-            export API_KEY="$API_KEY"
-            export DATABASE_URL="$DATABASE_URL"
-            export ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
+            export APP_API_ENDPOINT="$APP_API_ENDPOINT"
+            export APP_CONFIG_VALUE="$APP_CONFIG_VALUE"
+            export APP_SECRET_KEY="$APP_SECRET_KEY"
+            export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
             
-            # Clean up any failed deployments first
+            # Clean up failed deployments
             ./scripts/cleanup.sh --app-name=backend --failed-only
             
-            # Run the deployment with all application-specific params
+            # Run the deployment
             ./scripts/deploy.sh "$VERSION" \
               --app-name=backend \
               --image-repo=$IMAGE_REPO \
@@ -716,6 +738,76 @@ Configure unique ports for each application using command-line parameters:
   --nginx-port=81 \
   --blue-port=8083 \
   --green-port=8084
+```
+
+## Supporting Multiple Organizational Structures
+
+This toolkit supports both per-project and centralized organizational structures:
+
+### Per-Project Structure (Default)
+
+In this approach, each application has its own copy of the deployment scripts:
+
+```
+/app/
+├── app1/                      # First application
+│   ├── docker-compose.yml
+│   ├── scripts/               # Deployment scripts for app1
+│   ├── config/                # Configuration templates 
+│   └── logs/                  # Application-specific logs
+│
+├── app2/                      # Second application
+│   ├── docker-compose.yml
+│   ├── scripts/               # Separate copy of deployment scripts
+│   ├── config/                # Configuration templates
+│   └── logs/                  # Application-specific logs
+```
+
+### Centralized Structure
+
+In this approach, deployment scripts are stored in a central location and used for multiple projects:
+
+```
+/apps/
+├── organization/              # Organization folder
+│   ├── tools/                 # Centralized tools
+│   │   └── blue-green-deploy/ # Single copy of deployment scripts
+│   │
+│   ├── logs/                  # Centralized logs (optional)
+│   │
+│   ├── backend/               # First application
+│   │   ├── docker-compose.yml
+│   │   └── Dockerfile
+│   │
+│   └── website/               # Second application
+│       ├── docker-compose.yml
+│       └── Dockerfile
+```
+
+To use the centralized structure, install the scripts in your tools directory:
+
+```bash
+# Install in centralized tools directory
+mkdir -p /apps/your-org/tools/blue-green-deploy
+cd /apps/your-org/tools/blue-green-deploy
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+./install.sh your-org .
+
+# Create centralized logs directory (optional)
+mkdir -p /apps/your-org/logs
+```
+
+Then deploy individual projects by specifying their directory:
+
+```bash
+# Deploy backend project
+cd /apps/your-org/tools/blue-green-deploy
+./scripts/deploy.sh v1.0.0 \
+  --app-name=backend \
+  --project-dir=/apps/your-org/backend \
+  --image-repo=your-org/backend \
+  --logs-dir=/apps/your-org/logs \
+  --nginx-port=80
 ```
 
 ## Integrating Backend Services
@@ -1015,7 +1107,7 @@ cd /app/your-app-name
 grep -E "blue|green" nginx.conf
 
 # View deployment logs
-cat .deployment_logs/*.log
+cat logs/${APP_NAME}-*.log
 
 # Check environment files
 cat .env.blue
