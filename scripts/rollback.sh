@@ -43,7 +43,8 @@ read ACTIVE_ENV ROLLBACK_ENV <<< $(get_environments)
 DOCKER_COMPOSE=$(get_docker_compose_cmd)
 
 # Check if the rollback environment exists
-if ! $DOCKER_COMPOSE -p ${APP_NAME}-${ROLLBACK_ENV} ps 2>/dev/null | grep -q "backend-api"; then
+# Check if the rollback environment exists without assuming a specific service name
+if ! $DOCKER_COMPOSE -p ${APP_NAME}-${ROLLBACK_ENV} ps 2>/dev/null | grep -q "Up\|Exit"; then
   log_error "Rollback environment ($ROLLBACK_ENV) doesn't exist! Cannot rollback."
   exit 1
 fi

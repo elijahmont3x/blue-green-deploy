@@ -11,16 +11,16 @@ http {
     sendfile        on;
     keepalive_timeout  65;
     
-    upstream backend {
-        server APP_NAME-blue-backend-api-1:3000 weight=BLUE_WEIGHT;
-        server APP_NAME-green-backend-api-1:3000 weight=GREEN_WEIGHT;
+    upstream app {
+        server APP_NAME-blue-app-1:3000 weight=BLUE_WEIGHT;
+        server APP_NAME-green-app-1:3000 weight=GREEN_WEIGHT;
     }
 
     server {
         listen NGINX_PORT;
         
         location / {
-            proxy_pass http://backend;
+            proxy_pass http://app;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -28,7 +28,7 @@ http {
         }
         
         location /health {
-            proxy_pass http://backend/health;
+            proxy_pass http://app/health;
             access_log off;
         }
     }

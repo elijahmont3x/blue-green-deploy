@@ -15,11 +15,11 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Application Health Check Requirements](#application-health-check-requirements)
 - [Deployment Workflow](#deployment-workflow)
 - [Configuration Approach](#configuration-approach)
+- [Service Name Configuration](#service-name-configuration)
 - [Command Reference](#command-reference)
 - [CI/CD Integration](#cicd-integration)
 - [Handling Configuration File Updates](#handling-configuration-file-updates)
 - [Supporting Multiple Applications](#supporting-multiple-applications)
-- [Integrating Backend Services](#integrating-backend-services)
 - [Plugin System](#plugin-system)
 - [Advanced Usage](#advanced-usage)
 - [Troubleshooting](#troubleshooting)
@@ -54,15 +54,14 @@ Get up and running quickly with these steps:
    # SSH into your server
    ssh user@your-server-ip
    
-   # Per-Project Installation (Default)
+   # Create directory for your application deployment
    mkdir -p /app/myapp && cd /app/myapp
    
-   # Download only the essential deployment files
-   curl -s https://raw.githubusercontent.com/elijahmont3x/blue-green-deploy/main/scripts/install.sh | bash -s myapp
+   # Download the deployment toolkit
+   curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
    
-   # OR Centralized Installation (For managing multiple projects)
-   mkdir -p /apps/your-org/tools/blue-green-deploy && cd /apps/your-org/tools/blue-green-deploy
-   curl -s https://raw.githubusercontent.com/elijahmont3x/blue-green-deploy/main/scripts/install.sh | bash -s your-org centralized
+   # Install the deployment scripts (auto-fixes permissions)
+   ./install.sh myapp
    ```
 
 2. **Upload your application files**:
@@ -74,22 +73,14 @@ Get up and running quickly with these steps:
 
 3. **Deploy your application**:
    ```bash
-   # For per-project installation
+   # From your server
    cd /app/myapp
    ./scripts/deploy.sh v1.0.0 --app-name=myapp --image-repo=yourusername/myapp
-   
-   # OR for centralized installation
-   cd /apps/your-org/tools/blue-green-deploy
-   ./scripts/deploy.sh v1.0.0 --app-name=myapp --project-dir=/apps/your-org/myapp --image-repo=yourusername/myapp
    ```
 
 4. **Complete the cutover** (if using --no-shift option or manual control):
    ```bash
-   # For per-project installation
    ./scripts/cutover.sh green --app-name=myapp
-   
-   # OR for centralized installation
-   ./scripts/cutover.sh green --app-name=myapp --project-dir=/apps/your-org/myapp
    ```
 
 That's it! Your application is now deployed with zero downtime using blue/green deployment.
@@ -105,7 +96,7 @@ This system is installed on your production server and works with your existing 
 
 Here's how the system modifies your server infrastructure:
 
-### How It Works
+### Infrastructure Changes
 
 This system modifies your infrastructure from a single application to a blue/green deployment model:
 
@@ -198,7 +189,7 @@ cd /app/your-app-name
 curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts (auto-fixes permissions)
-./install.sh your-app-name .
+./install.sh your-app-name
 ```
 
 The `install.sh` script will:
@@ -222,7 +213,8 @@ The toolkit creates this structure **on your server**:
 │   └── ...
 ├── config/                       # Added configuration templates
 │   └── templates/
-└── plugins/                      # Optional deployment plugins  
+├── plugins/                      # Optional deployment plugins
+└── logs/                         # Deployment logs
 ```
 
 **Important**: These files exist only on your server. They are NOT part of your application's Git repository.
@@ -378,6 +370,7 @@ Benefits of this approach:
 - Explicit parameters make it clear what values are being passed
 - Better traceability in logs and deployment history
 - Easier to test different configurations
+
 ### Environment Files and Docker Compose
 
 While you provide configuration via command-line parameters, the system still generates temporary environment files (`.env.blue` and `.env.green`) for Docker Compose to use. This is because Docker Compose requires environment files to properly isolate environments.
@@ -408,6 +401,105 @@ Whether using command-line parameters or any other approach, these are the key c
 - `REDIS_URL`: Redis connection string
 - Other application-specific secrets
 
+## Service Name Configuration
+
+By default, the deployment system assumes your main application service is named `app` in your docker-compose.yml file. If you use a different service name, you'll need to update the Nginx configuration templates accordingly.
+
+### Example docker-compose.yml
+
+Here's a generic docker-compose.yml example that works with the default configuration:
+
+```yaml
+version: '3.8'
+name: ${APP_NAME:-myapp}
+
+networks:
+  app-network:
+    driver: bridge
+
+services:
+  app:  # This is the main service name the system expects by default
+    image: ${IMAGE_REPO:-yourusername/myapp}:${VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - ENV_NAME=${ENV_NAME:-default}
+    ports:
+      - '${PORT:-3000}:3000'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  nginx:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    ports:
+      - '${NGINX_PORT:-80}:80'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app
+    networks:
+      - app-network
+```
+
+### Customizing Service Names
+
+If your main service has a different name (e.g., "web", "api", or "frontend"):
+
+1. Edit the Nginx configuration templates in `config/templates/`:
+   ```bash
+   # Edit both templates
+   nano config/templates/nginx-single-env.conf.template
+   nano config/templates/nginx-dual-env.conf.template
+   ```
+
+2. Replace references to `app` with your service name. For example, if your service is named `web`:
+   ```nginx
+   upstream app {
+       server APP_NAME-ENVIRONMENT-web-1:3000;
+   }
+   ```
+
+3. Update the docker-compose.override.template to match your service name:
+   ```bash
+   nano config/templates/docker-compose.override.template
+   ```
+
+   Update the service name to match your docker-compose.yml:
+   ```yaml
+   services:
+     web:
+       restart: unless-stopped
+       environment:
+         - NODE_ENV=production
+         - ENV_NAME={{ENV_NAME}}
+       # Other configurations...
+   ```
+
+### Port Configuration
+
+The deployment system assumes your application runs on port 3000 internally, but this can be customized:
+
+1. Update the Nginx configuration templates to use the correct port:
+   ```nginx
+   upstream app {
+       server APP_NAME-ENVIRONMENT-app-1:8000;  # If your app runs on port 8000
+   }
+   ```
+
+2. Update your docker-compose.yml to expose the correct port:
+   ```yaml
+   services:
+     app:
+       ports:
+         - '${PORT:-8000}:8000'
+   ```
+
 ## Command Reference
 
 The deployment toolkit provides these commands (all run on your server):
@@ -420,8 +512,6 @@ The deployment toolkit provides these commands (all run on your server):
 # Options:
 #   --app-name=NAME       Application name
 #   --image-repo=REPO     Docker image repository
-#   --project-dir=PATH    Project directory for centralized deployments
-#   --logs-dir=PATH       Logs directory location
 #   --nginx-port=PORT     Nginx external port
 #   --blue-port=PORT      Blue environment port
 #   --green-port=PORT     Green environment port
@@ -432,7 +522,7 @@ The deployment toolkit provides these commands (all run on your server):
 
 # Examples:
 ./scripts/deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
-./scripts/deploy.sh v1.1 --app-name=myapp --no-shift --project-dir=/apps/myorg/myapp
+./scripts/deploy.sh v1.1 --app-name=myapp --no-shift
 ```
 
 ### Cutover
@@ -442,8 +532,6 @@ The deployment toolkit provides these commands (all run on your server):
 
 # Options:
 #   --app-name=NAME       Application name
-#   --project-dir=PATH    Project directory for centralized deployments
-#   --logs-dir=PATH       Logs directory location
 #   --keep-old            Don't stop the previous environment
 
 # Example:
@@ -514,7 +602,7 @@ jobs:
           push: true
           tags: username/your-app:${{ github.sha }}
       
-      # Copy configuration files to server (Default)
+      # Copy configuration files to server
       - name: Copy configuration files to server
         uses: appleboy/scp-action@master
         with:
@@ -544,12 +632,12 @@ jobs:
               --redis-url="${{ secrets.REDIS_URL }}"
 ```
 
-### Production-Ready Backend Example
+### Production-Ready Example
 
-For production-grade Node.js backend applications, here's a complete example that handles permissions, environment variables, and proper script installation:
+Here's a complete example that handles permissions, environment variables, and proper script installation:
 
 ```yaml
-name: Backend CI/CD with Blue-Green Deployment
+name: CI/CD with Blue-Green Deployment
 
 on:
   push:
@@ -579,7 +667,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "scripts/**,config/**"
-          target: '/app/backend'
+          target: '/app/myapp'
           strip_components: 0
           overwrite: true
       
@@ -591,7 +679,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "docker-compose.yml,Dockerfile"
-          target: '/app/backend'
+          target: '/app/myapp'
           strip_components: 0
       
       # Deploy to Production
@@ -599,7 +687,7 @@ jobs:
         uses: appleboy/ssh-action@master
         env:
           VERSION: ${{ needs.test-and-build.outputs.version }}
-          IMAGE_REPO: "ghcr.io/example/backend"
+          IMAGE_REPO: "ghcr.io/example/myapp"
           # Application environment variables
           APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
           APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
@@ -611,7 +699,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
           script: |
-            cd /app/backend
+            cd /app/myapp
             
             # Make scripts executable
             chmod +x ./scripts/*.sh
@@ -623,11 +711,11 @@ jobs:
             export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
             
             # Clean up failed deployments
-            ./scripts/cleanup.sh --app-name=backend --failed-only
+            ./scripts/cleanup.sh --app-name=myapp --failed-only
             
             # Run the deployment
             ./scripts/deploy.sh "$VERSION" \
-              --app-name=backend \
+              --app-name=myapp \
               --image-repo=$IMAGE_REPO \
               --nginx-port=80 \
               --blue-port=8081 \
@@ -713,13 +801,13 @@ You can install this deployment system for multiple applications on the same ser
 mkdir -p /app/app1
 cd /app/app1
 curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
-./install.sh app1 .
+./install.sh app1
 
 # Second application
 mkdir -p /app/app2
 cd /app/app2
 curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
-./install.sh app2 .
+./install.sh app2
 ```
 
 Configure unique ports for each application using command-line parameters:
@@ -740,162 +828,46 @@ Configure unique ports for each application using command-line parameters:
   --green-port=8084
 ```
 
-## Supporting Multiple Organizational Structures
+### Using with Organization Structure
 
-This toolkit supports both per-project and centralized organizational structures:
-
-### Per-Project Structure (Default)
-
-In this approach, each application has its own copy of the deployment scripts:
-
-```
-/app/
-├── app1/                      # First application
-│   ├── docker-compose.yml
-│   ├── scripts/               # Deployment scripts for app1
-│   ├── config/                # Configuration templates 
-│   └── logs/                  # Application-specific logs
-│
-├── app2/                      # Second application
-│   ├── docker-compose.yml
-│   ├── scripts/               # Separate copy of deployment scripts
-│   ├── config/                # Configuration templates
-│   └── logs/                  # Application-specific logs
-```
-
-### Centralized Structure
-
-In this approach, deployment scripts are stored in a central location and used for multiple projects:
-
-```
-/apps/
-├── organization/              # Organization folder
-│   ├── tools/                 # Centralized tools
-│   │   └── blue-green-deploy/ # Single copy of deployment scripts
-│   │
-│   ├── logs/                  # Centralized logs (optional)
-│   │
-│   ├── backend/               # First application
-│   │   ├── docker-compose.yml
-│   │   └── Dockerfile
-│   │
-│   └── website/               # Second application
-│       ├── docker-compose.yml
-│       └── Dockerfile
-```
-
-To use the centralized structure, install the scripts in your tools directory:
+You can organize your deployments in an organizational structure:
 
 ```bash
-# Install in centralized tools directory
-mkdir -p /apps/your-org/tools/blue-green-deploy
-cd /apps/your-org/tools/blue-green-deploy
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
-./install.sh your-org .
+# Create organization directory
+mkdir -p /app/soluigi
 
-# Create centralized logs directory (optional)
-mkdir -p /apps/your-org/logs
+# Install toolkit for different projects
+mkdir -p /app/soluigi/backend
+cd /app/soluigi/backend
+curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+./install.sh backend
+
+mkdir -p /app/soluigi/website
+cd /app/soluigi/website
+curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+./install.sh website
 ```
 
-Then deploy individual projects by specifying their directory:
+Then deploy each project with its own configuration:
 
 ```bash
-# Deploy backend project
-cd /apps/your-org/tools/blue-green-deploy
-./scripts/deploy.sh v1.0.0 \
+# Deploy backend
+cd /app/soluigi/backend
+./scripts/deploy.sh v1.0 \
   --app-name=backend \
-  --project-dir=/apps/your-org/backend \
-  --image-repo=your-org/backend \
-  --logs-dir=/apps/your-org/logs \
-  --nginx-port=80
-```
+  --image-repo=soluigi/backend \
+  --nginx-port=8080 \
+  --blue-port=8081 \
+  --green-port=8082
 
-## Integrating Backend Services
-
-### Redis Integration
-
-1. Add Redis to your application's `docker-compose.yml`:
-
-```yaml
-services:
-  # Your existing services...
-  
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    networks:
-      - app-network
-
-volumes:
-  redis-data:
-```
-
-2. Pass Redis connection info during deployment:
-
-```bash
+# Deploy website
+cd /app/soluigi/website
 ./scripts/deploy.sh v1.0 \
-  --app-name=your-app-name \
-  --redis-url="redis://redis:6379/0"
-```
-
-### PostgreSQL Integration
-
-1. Add PostgreSQL to your application's `docker-compose.yml`:
-
-```yaml
-services:
-  # Your existing services...
-  
-  postgres:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=${DB_USER:-dbuser}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-dbpassword}
-      - POSTGRES_DB=${DB_NAME:-appdb}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - app-network
-
-volumes:
-  postgres-data:
-```
-
-2. Pass database connection info during deployment:
-
-```bash
-./scripts/deploy.sh v1.0 \
-  --app-name=your-app-name \
-  --database-url="postgresql://dbuser:dbpassword@postgres:5432/appdb"
-```
-
-3. For database migrations, create a plugin on your server:
-
-```bash
-# On your server
-mkdir -p /app/your-app-name/plugins
-cat > /app/your-app-name/plugins/db-migrate.sh << 'EOL'
-#!/bin/bash
-
-hook_pre_deploy() {
-  local version="$1"
-  
-  log_info "Running database migrations for version $version"
-  
-  docker run --rm \
-    --network=${APP_NAME}_app-network \
-    -e DATABASE_URL="${DATABASE_URL}" \
-    ${IMAGE_REPO}:${version} \
-    npm run migrate
-    
-  return $?
-}
-EOL
-
-chmod +x /app/your-app-name/plugins/db-migrate.sh
+  --app-name=website \
+  --image-repo=soluigi/website \
+  --nginx-port=80 \
+  --blue-port=8083 \
+  --green-port=8084
 ```
 
 ## Plugin System
@@ -1002,36 +974,6 @@ hook_pre_deploy() {
 }
 ```
 
-#### Performance Test Plugin
-
-```bash
-#!/bin/bash
-# plugins/perf-test.sh
-
-hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
-  local port=$([[ "$env_name" == "blue" ]] && echo "${BLUE_PORT}" || echo "${GREEN_PORT}")
-  
-  log_info "Running basic performance test on new deployment"
-  
-  # Run simple load test using Apache Bench (ab)
-  if command -v ab > /dev/null; then
-    ab -n 100 -c 10 "http://localhost:${port}${HEALTH_ENDPOINT}" > "perf-test-${version}.txt"
-    
-    # Extract results
-    local rps=$(grep "Requests per second" "perf-test-${version}.txt" | awk '{print $4}')
-    local time=$(grep "Time per request" "perf-test-${version}.txt" | head -n 1 | awk '{print $4}')
-    
-    log_info "Performance test results: ${rps} req/sec, ${time}ms per request"
-  else
-    log_warning "Apache Bench (ab) not found, skipping performance test"
-  fi
-  
-  return 0
-}
-```
-
 ### Creating Your Own Plugins
 
 1. Create a bash script in the plugins directory:
@@ -1096,6 +1038,7 @@ server {
 | Nginx not routing | Check generated config with `cat nginx.conf` |
 | Environment variables not passing | Verify parameter values in deployment command |
 | Database connection failing | Check network settings and credentials |
+| Service name mismatch | Ensure the service name in templates matches your docker-compose.yml |
 
 ### Diagnosing Problems
 

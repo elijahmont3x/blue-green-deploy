@@ -4,11 +4,10 @@
 #
 # Usage:
 #   chmod +x ./install.sh  # Make this script executable first
-#   ./install.sh [APP_NAME] [INSTALL_DIR]
+#   ./install.sh [APP_NAME]
 #
 # Arguments:
 #   APP_NAME     Name of your application (default: "app")
-#   INSTALL_DIR  Directory to install to (default: current directory)
 
 set -euo pipefail
 
@@ -22,33 +21,14 @@ fi
 
 # Default values
 APP_NAME=${1:-"app"}
-INSTALL_DIR=${2:-"."}
 
-# Ensure INSTALL_DIR is absolute path
-if [[ "$INSTALL_DIR" != /* ]]; then
-  INSTALL_DIR="$(pwd)/$INSTALL_DIR"
-fi
-
-echo "Initializing blue/green deployment system for $APP_NAME in $INSTALL_DIR"
-
-# Detect installation type and provide appropriate guidance
-if [[ "$INSTALL_DIR" == *"tools"* ]] || [[ "$INSTALL_DIR" == *"tools/blue-green-deploy"* ]]; then
-  echo "⚠️  Installing in central tools directory."
-  echo "   When using centralized deployment, you will need to specify the project directory:"
-  echo "   ./scripts/deploy.sh VERSION --app-name=project --project-dir=/path/to/project [OPTIONS]"
-  
-  # For centralized deployment, recommend logs directory outside of tools
-  echo "   For centralized logging, use: --logs-dir=/apps/your-org/logs"
-else
-  echo "✓ Installing in project-specific directory."
-  echo "   Logs will be stored in $INSTALL_DIR/logs by default."
-fi
+echo "Initializing blue/green deployment system for $APP_NAME"
 
 # Create essential directory structure
-mkdir -p "$INSTALL_DIR/scripts"
-mkdir -p "$INSTALL_DIR/config/templates"
-mkdir -p "$INSTALL_DIR/plugins"
-mkdir -p "$INSTALL_DIR/logs"  # Create logs directory instead of .deployment_logs
+mkdir -p "scripts"
+mkdir -p "config/templates"
+mkdir -p "plugins"
+mkdir -p "logs"
 
 # Define current script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,8 +49,8 @@ for script in "${ESSENTIAL_SCRIPTS[@]}"; do
   script_path="$SCRIPT_DIR/scripts/$script"
   
   if [ -f "$script_path" ]; then
-    cp "$script_path" "$INSTALL_DIR/scripts/"
-    chmod +x "$INSTALL_DIR/scripts/$script"
+    cp "$script_path" "scripts/"
+    chmod +x "scripts/$script"
     echo "  ✓ $script"
   else
     echo "  ✗ $script not found"
@@ -90,7 +70,7 @@ for template in "${ESSENTIAL_TEMPLATES[@]}"; do
   template_path="$SCRIPT_DIR/config/templates/$template"
   
   if [ -f "$template_path" ]; then
-    cp "$template_path" "$INSTALL_DIR/config/templates/"
+    cp "$template_path" "config/templates/"
     echo "  ✓ $template"
   else
     echo "  ✗ $template not found"

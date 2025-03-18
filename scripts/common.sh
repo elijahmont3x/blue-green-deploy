@@ -6,11 +6,8 @@ set -euo pipefail
 # This file contains common functions used across the blue/green deployment system.
 # It handles parameter parsing, logging, environment management, and other utilities.
 
-# Add support for project directory and log directory
-PROJECT_DIR=${PROJECT_DIR:-$(pwd)}
-# For centralized deployments, store logs in project directory
-# For per-project deployments, store logs in logs subdirectory
-LOGS_DIR=${LOGS_DIR:-"$PROJECT_DIR/logs"}
+# Define logs directory
+LOGS_DIR="./logs"
 
 # Logging functions
 log_info() {
@@ -59,7 +56,6 @@ parse_parameters() {
       --old-only) CLEAN_OLD=true ;;
       --dry-run) DRY_RUN=true ;;
       --keep-old) KEEP_OLD=true ;;
-      --project-dir=*) PROJECT_DIR="${1#*=}" ;;  # Add project directory parameter
       --logs-dir=*) LOGS_DIR="${1#*=}" ;;
       *)
         if [[ "$1" == "--"* ]]; then
@@ -70,12 +66,6 @@ parse_parameters() {
     esac
     shift
   done
-  
-  # If project directory is specified but logs directory isn't,
-  # set logs directory inside the project directory by default
-  if [[ -n "${PROJECT_DIR}" && "$LOGS_DIR" == "$(pwd)/logs" ]]; then
-    LOGS_DIR="$PROJECT_DIR/logs"
-  fi
   
   # Set defaults if not provided
   APP_NAME=${APP_NAME:-"app"}
@@ -177,8 +167,7 @@ create_env_file() {
   local env_name=$1
   local port=$2
 
-  # Use the project directory for storing environment files
-  cat > "${PROJECT_DIR}/.env.${env_name}" << EOL
+  cat > ".env.${env_name}" << EOL
 # Auto-generated environment file for ${env_name} environment
 # This file is used by Docker Compose to configure the ${env_name} environment
 APP_NAME=${APP_NAME}
@@ -198,16 +187,16 @@ EOL
   
   for var in "${env_vars[@]}"; do
     if [ -n "${!var:-}" ]; then
-      echo "${var}=${!var}" >> "${PROJECT_DIR}/.env.${env_name}"
+      echo "${var}=${!var}" >> ".env.${env_name}"
     fi
   done
   
   # Add any DB_* or APP_* environment variables
-  env | grep -E '^(DB_|APP_)' | sort >> "${PROJECT_DIR}/.env.${env_name}" 2>/dev/null || true
+  env | grep -E '^(DB_|APP_)' | sort >> ".env.${env_name}" 2>/dev/null || true
   
   # Set secure permissions
-  chmod 600 "${PROJECT_DIR}/.env.${env_name}"
-  log_info "Created ${PROJECT_DIR}/.env.${env_name} file with deployment variables"
+  chmod 600 ".env.${env_name}"
+  log_info "Created .env.${env_name} file with deployment variables"
 }
 
 # Check if a container is healthy
@@ -250,10 +239,10 @@ update_traffic_distribution() {
     sed -e "s/BLUE_WEIGHT/$blue_weight/g" | \
     sed -e "s/GREEN_WEIGHT/$green_weight/g" | \
     sed -e "s/APP_NAME/$APP_NAME/g" | \
-    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" > "${PROJECT_DIR}/$nginx_conf"
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" > "$nginx_conf"
   
   local docker_compose=$(get_docker_compose_cmd)
-  (cd "$PROJECT_DIR" && $docker_compose restart nginx) || log_warning "Failed to restart nginx"
+  $docker_compose restart nginx || log_warning "Failed to restart nginx"
 }
 
 # Check health of an endpoint

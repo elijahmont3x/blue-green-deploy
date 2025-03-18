@@ -1,4 +1,4 @@
-name: Backend CI/CD with Blue-Green Deployment
+name: CI/CD with Blue-Green Deployment  # Changed from Backend CI/CD
 
 on:
   push:
@@ -9,78 +9,18 @@ on:
     # Run cleanup job every day at 2:00 AM UTC
     - cron: '0 2 * * *'
 
-permissions:
-  contents: write
-  packages: write
-
-concurrency:
-  group: production_environment
-  cancel-in-progress: false
-
 jobs:
   test-and-build:
-    timeout-minutes: 15
-    runs-on: ubuntu-latest
-    env:
-      APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
-      APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
-      APP_SECRET_KEY: ${{ vars.APP_SECRET_KEY }}
-      APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
-    outputs:
-      version: ${{ steps.versioning.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 8
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'pnpm'
-
-      - name: Version
-        id: versioning
-        run: echo "version=$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
-
-      - run: pnpm install
-      - run: pnpm test
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: |
-            ghcr.io/example/backend:latest
-            ghcr.io/example/backend:${{ steps.versioning.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.visibility=private
-
+    # ...build and test steps...
+    
   deploy:
     needs: test-and-build
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Step 1: Copy deployment scripts to server if not already installed
+      
+      # Copy deployment scripts and configuration templates
       - name: Copy deployment scripts to server
         uses: appleboy/scp-action@master
         with:
@@ -88,11 +28,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "scripts/**,config/**"
-          target: '/app/backend'
+          target: '/app/myapp'  # Changed from backend to myapp
           strip_components: 0
           overwrite: true
-
-      # Step 2: Copy application files to server
+      
+      # Copy application configuration files
       - name: Copy application files to server
         uses: appleboy/scp-action@master
         with:
@@ -100,66 +40,45 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: "docker-compose.yml,Dockerfile"
-          target: '/app/backend'
+          target: '/app/myapp'  # Changed from backend to myapp
           strip_components: 0
-
-      # Step 3: Deploy to Production
+      
+      # Deploy to Production
       - name: Deploy to Production
         uses: appleboy/ssh-action@master
         env:
           VERSION: ${{ needs.test-and-build.outputs.version }}
-          IMAGE_REPO: "ghcr.io/example/backend"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_USERNAME: ${{ github.repository_owner }}
-          # Pass through all application-specific environment variables
+          IMAGE_REPO: "ghcr.io/example/myapp"  # Changed from backend to myapp
+          # Application environment variables
           APP_API_ENDPOINT: ${{ vars.APP_API_ENDPOINT }}
           APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
-          APP_SECRET_KEY: ${{ vars.APP_SECRET_KEY }}
+          APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: VERSION,IMAGE_REPO,GITHUB_TOKEN,GITHUB_USERNAME,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
+          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
           script: |
-            cd /app/backend
+            cd /app/myapp  # Changed from backend to myapp
             
             # Make scripts executable
             chmod +x ./scripts/*.sh
             
-            # Login to GitHub Container Registry for private images
-            echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_USERNAME --password-stdin
-            
             # Export application-specific environment variables BEFORE deployment
-            # So they're available to the deployment process
             export APP_API_ENDPOINT="$APP_API_ENDPOINT"
             export APP_CONFIG_VALUE="$APP_CONFIG_VALUE"
             export APP_SECRET_KEY="$APP_SECRET_KEY"
             export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
             
-            # Clean up any failed deployments first
-            ./scripts/cleanup.sh --app-name=backend --failed-only
+            # Clean up failed deployments
+            ./scripts/cleanup.sh --app-name=myapp --failed-only  # Changed from backend to myapp
             
-            # Run the deployment with all application-specific params
+            # Run the deployment
             ./scripts/deploy.sh "$VERSION" \
-              --app-name=backend \
+              --app-name=myapp \  # Changed from backend to myapp
               --image-repo=$IMAGE_REPO \
               --nginx-port=80 \
               --blue-port=8081 \
               --green-port=8082 \
               --health-endpoint=/health
-
-  cleanup:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Cleanup environments
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd /app/backend
-            # Clean up old inactive environments and failed deployments
-            ./scripts/cleanup.sh --app-name=backend
