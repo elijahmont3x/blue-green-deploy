@@ -126,6 +126,21 @@ services:
 EOL
 fi
 
+# Generate initial nginx.conf file
+# This is critical - nginx will fail to start without this file
+NGINX_TEMPLATE="${TEMPLATE_DIR}/nginx-single-env.conf.template"
+if [ -f "$NGINX_TEMPLATE" ]; then
+  log_info "Generating initial nginx configuration..."
+  cat "$NGINX_TEMPLATE" | \
+    sed -e "s/ENVIRONMENT/$TARGET_ENV/g" | \
+    sed -e "s/APP_NAME/$APP_NAME/g" | \
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" > "nginx.conf"
+else
+  log_error "Nginx template file not found at $NGINX_TEMPLATE"
+  log_deployment_step "$VERSION" "deployment_failed" "nginx_template_missing"
+  exit 1
+fi
+
 # Start the new environment
 log_info "Starting $TARGET_ENV environment with version $VERSION..."
 $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV --env-file .env.${TARGET_ENV} \
