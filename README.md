@@ -57,8 +57,8 @@ Get up and running quickly with these steps:
    # Create directory for your application deployment
    mkdir -p /app/myapp && cd /app/myapp
    
-   # Download the deployment toolkit
-   curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+   # Download the deployment toolkit (latest release)
+   curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
    
    # Install the deployment scripts (auto-fixes permissions)
    ./install.sh myapp
@@ -185,8 +185,8 @@ ssh user@your-server-ip
 mkdir -p /app/your-app-name
 cd /app/your-app-name
 
-# Download the deployment toolkit
-curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+# Download the deployment toolkit (from official release)
+curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts (auto-fixes permissions)
 ./install.sh your-app-name
@@ -659,26 +659,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # Copy deployment scripts and configuration templates
-      - name: Copy deployment scripts to server
-        uses: appleboy/scp-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "scripts/**,config/**"
-          target: '/app/myapp'
-          strip_components: 0
-          overwrite: true
+      # Download deployment toolkit from release
+      - name: Download deployment toolkit
+        run: |
+          mkdir -p deployment
+          curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz -o deployment/toolkit.tar.gz
       
-      # Copy application configuration files
-      - name: Copy application files to server
+      # Copy deployment toolkit and configuration to server
+      - name: Copy deployment toolkit to server
         uses: appleboy/scp-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "docker-compose.yml,Dockerfile"
+          source: "deployment/toolkit.tar.gz,docker-compose.yml,Dockerfile"
           target: '/app/myapp'
           strip_components: 0
       
@@ -700,6 +694,12 @@ jobs:
           envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
           script: |
             cd /app/myapp
+            
+            # Extract toolkit if not already installed
+            if [ ! -f "./scripts/deploy.sh" ]; then
+              tar -xzf toolkit.tar.gz
+              ./install.sh myapp
+            fi
             
             # Make scripts executable
             chmod +x ./scripts/*.sh
@@ -800,13 +800,13 @@ You can install this deployment system for multiple applications on the same ser
 # First application
 mkdir -p /app/app1
 cd /app/app1
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh app1
 
 # Second application
 mkdir -p /app/app2
 cd /app/app2
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh app2
 ```
 
@@ -839,12 +839,12 @@ mkdir -p /app/soluigi
 # Install toolkit for different projects
 mkdir -p /app/soluigi/backend
 cd /app/soluigi/backend
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh backend
 
 mkdir -p /app/soluigi/website
 cd /app/soluigi/website
-curl -L https://github.com/yourusername/blue-green-deploy/archive/main.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh website
 ```
 
