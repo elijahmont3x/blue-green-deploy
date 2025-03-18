@@ -58,7 +58,7 @@ Get up and running quickly with these steps:
    mkdir -p /app/myapp && cd /app/myapp
    
    # Download the deployment toolkit (latest release)
-   curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+   curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
    
    # Install the deployment scripts (auto-fixes permissions)
    ./install.sh myapp
@@ -186,7 +186,7 @@ mkdir -p /app/your-app-name
 cd /app/your-app-name
 
 # Download the deployment toolkit (from official release)
-curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
 
 # Install the deployment scripts (auto-fixes permissions)
 ./install.sh your-app-name
@@ -663,7 +663,7 @@ jobs:
       - name: Download deployment toolkit
         run: |
           mkdir -p deployment
-          curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz -o deployment/toolkit.tar.gz
+          curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz -o deployment/toolkit.tar.gz
       
       # Copy deployment toolkit and configuration to server
       - name: Copy deployment toolkit to server
@@ -800,13 +800,13 @@ You can install this deployment system for multiple applications on the same ser
 # First application
 mkdir -p /app/app1
 cd /app/app1
-curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh app1
 
 # Second application
 mkdir -p /app/app2
 cd /app/app2
-curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh app2
 ```
 
@@ -839,12 +839,12 @@ mkdir -p /app/soluigi
 # Install toolkit for different projects
 mkdir -p /app/soluigi/backend
 cd /app/soluigi/backend
-curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh backend
 
 mkdir -p /app/soluigi/website
 cd /app/soluigi/website
-curl -L https://github.com/elijahmont3x/blue-green-deploy/releases/download/v1.0.0/blue-green-deploy-v1.0.0.tar.gz | tar xz --strip-components=1
+curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
 ./install.sh website
 ```
 
