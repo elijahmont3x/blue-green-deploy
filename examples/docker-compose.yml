@@ -1,17 +1,39 @@
 version: '3.8'
 name: ${APP_NAME:-myapp}
 
+# Define networks that can be shared across environments
 networks:
-  app-network:
+  # This network is shared between blue/green environments
+  shared-network:
+    name: ${APP_NAME}-shared-network
+    external: ${SHARED_NETWORK_EXISTS:-false}
+  # This network is environment-specific
+  env-network:
+    name: ${APP_NAME}-${ENV_NAME}-network
     driver: bridge
 
+# Define volumes that persist between deployments
+volumes:
+  db-data:
+    name: ${APP_NAME}-db-data
+    external: ${DB_DATA_EXISTS:-false}
+  redis-data:
+    name: ${APP_NAME}-redis-data
+    external: ${REDIS_DATA_EXISTS:-false}
+
 services:
+  # Blue/Green deployable services (stateless)
+  # ==================================
+  
+  # Main application service - will be blue/green deployed
   app:
     image: ${IMAGE_REPO:-ghcr.io/example/myapp}:${VERSION:-latest}
     restart: unless-stopped
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - ENV_NAME=${ENV_NAME:-default}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@db:5432/myapp}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     ports:
       - '${PORT:-3000}:3000'
     healthcheck:
@@ -20,16 +42,113 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - app-network
+      - env-network
+      - shared-network
+    depends_on:
+      - db
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '${APP_CPU_LIMIT:-1}'
+          memory: ${APP_MEMORY_LIMIT:-1G}
+    labels:
+      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
 
+  # Frontend service - will also be blue/green deployed
+  frontend:
+    image: ${FRONTEND_IMAGE_REPO:-ghcr.io/example/frontend}:${FRONTEND_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - ENV_NAME=${ENV_NAME:-default}
+      - API_URL=${API_URL:-http://app:3000}
+    ports:
+      - '${FRONTEND_PORT:-8080}:80'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:80/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - env-network
+      - shared-network
+    deploy:
+      resources:
+        limits:
+          cpus: '${FRONTEND_CPU_LIMIT:-0.5}'
+          memory: ${FRONTEND_MEMORY_LIMIT:-512M}
+    labels:
+      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
+
+  # Shared/persistent services (stateful)
+  # =============================
+  
+  # Database service - shared between blue/green environments
+  db:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-myapp}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-network
+    deploy:
+      resources:
+        limits:
+          cpus: '${DB_CPU_LIMIT:-1}'
+          memory: ${DB_MEMORY_LIMIT:-1G}
+    labels:
+      - "bgd.role=persistent"  # Marks service as shared between environments
+    profiles:
+      - shared  # Only starts when explicitly included
+
+  # Redis service - shared between blue/green environments
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-network
+    deploy:
+      resources:
+        limits:
+          cpus: '${REDIS_CPU_LIMIT:-0.5}'
+          memory: ${REDIS_MEMORY_LIMIT:-512M}
+    labels:
+      - "bgd.role=persistent"  # Marks service as shared between environments
+    profiles:
+      - shared  # Only starts when explicitly included
+
+  # Reverse proxy/load balancer
   nginx:
     image: nginx:stable-alpine
     restart: unless-stopped
     ports:
       - '${NGINX_PORT:-80}:80'
+      - '${NGINX_SSL_PORT:-443}:443'
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - env-network
+      - shared-network
     depends_on:
       - app
-    networks:
-      - app-network
+      - frontend
+    labels:
+      - "bgd.role=proxy"  # Marks service as the proxy

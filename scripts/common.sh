@@ -39,7 +39,11 @@ parse_parameters() {
     case $1 in
       --app-name=*) APP_NAME="${1#*=}" ;;
       --image-repo=*) IMAGE_REPO="${1#*=}" ;;
+      --frontend-image-repo=*) FRONTEND_IMAGE_REPO="${1#*=}" ;;
+      --frontend-version=*) FRONTEND_VERSION="${1#*=}" ;;
+      --domain-name=*) DOMAIN_NAME="${1#*=}" ;;
       --nginx-port=*) NGINX_PORT="${1#*=}" ;;
+      --nginx-ssl-port=*) NGINX_SSL_PORT="${1#*=}" ;;
       --blue-port=*) BLUE_PORT="${1#*=}" ;;
       --green-port=*) GREEN_PORT="${1#*=}" ;;
       --health-endpoint=*) HEALTH_ENDPOINT="${1#*=}" ;;
@@ -49,6 +53,9 @@ parse_parameters() {
       --database-url=*) DATABASE_URL="${1#*=}" ;;
       --api-key=*) API_KEY="${1#*=}" ;;
       --redis-url=*) REDIS_URL="${1#*=}" ;;
+      --setup-shared) SETUP_SHARED=true ;;
+      --skip-migrations) SKIP_MIGRATIONS=true ;;
+      --migrations-cmd=*) MIGRATIONS_CMD="${1#*=}" ;;
       --force) FORCE_FLAG=true ;;
       --no-shift) NO_SHIFT=true ;;
       --all) CLEAN_ALL=true ;;
@@ -70,6 +77,7 @@ parse_parameters() {
   # Set defaults if not provided
   APP_NAME=${APP_NAME:-"app"}
   NGINX_PORT=${NGINX_PORT:-80}
+  NGINX_SSL_PORT=${NGINX_SSL_PORT:-443}
   BLUE_PORT=${BLUE_PORT:-8081}
   GREEN_PORT=${GREEN_PORT:-8082}
   HEALTH_ENDPOINT=${HEALTH_ENDPOINT:-"/health"}
@@ -77,6 +85,9 @@ parse_parameters() {
   HEALTH_DELAY=${HEALTH_DELAY:-5}
   TIMEOUT=${TIMEOUT:-5}
   IMAGE_REPO=${IMAGE_REPO:-""}
+  FRONTEND_IMAGE_REPO=${FRONTEND_IMAGE_REPO:-""}
+  FRONTEND_VERSION=${FRONTEND_VERSION:-""}
+  DOMAIN_NAME=${DOMAIN_NAME:-"example.com"}
   
   # Flag defaults
   FORCE_FLAG=${FORCE_FLAG:-false}
@@ -86,6 +97,9 @@ parse_parameters() {
   CLEAN_OLD=${CLEAN_OLD:-false}
   DRY_RUN=${DRY_RUN:-false}
   KEEP_OLD=${KEEP_OLD:-false}
+  SETUP_SHARED=${SETUP_SHARED:-false}
+  SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
+  MIGRATIONS_CMD=${MIGRATIONS_CMD:-"npm run migrate"}
   
   return 0
 }
@@ -226,7 +240,7 @@ is_container_healthy() {
 #   $4 - Output file path
 #
 # Example:
-#   update_traffic_distribution 8 2 "./templates/nginx.template" "./nginx.conf"
+#   update_traffic_distribution 8 2 "./config/templates/nginx-multi-domain.conf.template" "./nginx.conf"
 update_traffic_distribution() {
   local blue_weight="$1"
   local green_weight="$2"
@@ -239,7 +253,9 @@ update_traffic_distribution() {
     sed -e "s/BLUE_WEIGHT/$blue_weight/g" | \
     sed -e "s/GREEN_WEIGHT/$green_weight/g" | \
     sed -e "s/APP_NAME/$APP_NAME/g" | \
-    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" > "$nginx_conf"
+    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT:-443}/g" > "$nginx_conf"
   
   local docker_compose=$(get_docker_compose_cmd)
   $docker_compose restart nginx || log_warning "Failed to restart nginx"
@@ -282,6 +298,38 @@ check_health() {
   
   log_error "Health check failed for $endpoint after $retries attempts"
   return 1
+}
+
+# Check health of multiple endpoints
+# 
+# Arguments:
+#   $1 - List of endpoints separated by spaces
+#   $2 - Number of retries (optional)
+#   $3 - Delay between retries in seconds (optional)
+#   $4 - Timeout for each request in seconds (optional)
+#
+# Returns:
+#   0 if all endpoints are healthy, 1 if any fails
+#
+# Example:
+#   check_multiple_health "http://localhost:8080/health http://localhost:8081/health" 5 10 3
+check_multiple_health() {
+  local endpoints=($1)
+  local retries="${2:-$HEALTH_RETRIES}"
+  local delay="${3:-$HEALTH_DELAY}"
+  local timeout="${4:-$TIMEOUT}"
+  
+  log_info "Checking health of multiple endpoints (${#endpoints[@]} total)"
+  
+  for endpoint in "${endpoints[@]}"; do
+    if ! check_health "$endpoint" "$retries" "$delay" "$timeout"; then
+      log_error "Health check failed for $endpoint"
+      return 1
+    fi
+  done
+  
+  log_success "All endpoints are healthy"
+  return 0
 }
 
 # Log deployment step for recovery and auditing

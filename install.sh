@@ -29,6 +29,7 @@ mkdir -p "scripts"
 mkdir -p "config/templates"
 mkdir -p "plugins"
 mkdir -p "logs"
+mkdir -p "certs"
 
 # Define current script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +54,7 @@ for script in "${ESSENTIAL_SCRIPTS[@]}"; do
     chmod +x "scripts/$script"
     echo "  ✓ $script"
   else
-    echo "  ✗ $script not found"
+    echo "  ✗ $script not found (skipping)"
   fi
 done
 
@@ -62,6 +63,7 @@ ESSENTIAL_TEMPLATES=(
   "nginx-single-env.conf.template"
   "nginx-dual-env.conf.template"
   "docker-compose.override.template"
+  "nginx-multi-domain.conf.template"
 )
 
 # Copy templates
@@ -73,12 +75,32 @@ for template in "${ESSENTIAL_TEMPLATES[@]}"; do
     cp "$template_path" "config/templates/"
     echo "  ✓ $template"
   else
-    echo "  ✗ $template not found"
+    echo "  ✗ $template not found (skipping)"
   fi
 done
+
+# Install plugins
+PLUGIN_DIR="$SCRIPT_DIR/plugins"
+if [ -d "$PLUGIN_DIR" ]; then
+  echo "Installing plugins..."
+  for plugin in "$PLUGIN_DIR"/*.sh; do
+    if [ -f "$plugin" ]; then
+      plugin_name=$(basename "$plugin")
+      cp "$plugin" "plugins/"
+      chmod +x "plugins/$plugin_name"
+      echo "  ✓ $plugin_name"
+    fi
+  done
+else
+  echo "No plugins directory found, skipping plugin installation."
+  mkdir -p "plugins"
+fi
 
 echo
 echo "✅ Installation completed successfully!"
 echo "System is ready for deployment with:"
 echo "  ./scripts/deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
+echo
+echo "For multi-container deployment with shared services:"
+echo "  ./scripts/deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
 echo
