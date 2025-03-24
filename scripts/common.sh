@@ -9,6 +9,9 @@ set -euo pipefail
 # Define logs directory
 LOGS_DIR="./logs"
 
+# Plugin system support
+declare -A REGISTERED_PLUGIN_ARGS
+
 # Logging functions
 log_info() {
   echo -e "\033[0;34m[INFO]\033[0m $1"
@@ -26,6 +29,55 @@ log_success() {
   echo -e "\033[0;32m[SUCCESS]\033[0m $1"
 }
 
+# Register a plugin argument
+# 
+# Arguments:
+#   $1 - Plugin name
+#   $2 - Argument name
+#   $3 - Default value
+register_plugin_argument() {
+  local plugin_name="$1"
+  local arg_name="$2"
+  local default_value="$3"
+  
+  REGISTERED_PLUGIN_ARGS["$arg_name"]="$default_value"
+  
+  # Create a global variable with the default value if it doesn't exist
+  if [ -z "${!arg_name:-}" ]; then
+    eval "$arg_name=\"$default_value\""
+  fi
+}
+
+# Load all plugins and register their arguments
+load_plugins() {
+  # Check if plugins directory exists
+  if [ ! -d "plugins" ]; then
+    return 0
+  fi
+  
+  # Check if there are any plugin files
+  local plugin_count=$(find plugins -name "*.sh" -type f 2>/dev/null | wc -l)
+  if [ "$plugin_count" -eq 0 ]; then
+    return 0
+  fi
+  
+  log_info "Loading plugins and registering arguments..."
+  
+  # Load all plugins
+  for plugin in plugins/*.sh; do
+    if [ -f "$plugin" ]; then
+      plugin_name=$(basename "$plugin" .sh)
+      log_info "Loading plugin: $plugin_name"
+      source "$plugin"
+      
+      # Call register function if it exists
+      if type "register_${plugin_name}_arguments" &>/dev/null; then
+        "register_${plugin_name}_arguments"
+      fi
+    fi
+  done
+}
+
 # Parse command-line parameters
 # 
 # Example usage:
@@ -35,42 +87,71 @@ log_success() {
 # Returns:
 #   0 if successful, 1 if invalid parameters
 parse_parameters() {
+  # Load plugins first to register their arguments
+  load_plugins
+  
+  # Process standard and plugin arguments
   while [[ "$#" -gt 0 ]]; do
+    local processed=0
+    
+    # Process standard arguments
     case $1 in
-      --app-name=*) APP_NAME="${1#*=}" ;;
-      --image-repo=*) IMAGE_REPO="${1#*=}" ;;
-      --frontend-image-repo=*) FRONTEND_IMAGE_REPO="${1#*=}" ;;
-      --frontend-version=*) FRONTEND_VERSION="${1#*=}" ;;
-      --domain-name=*) DOMAIN_NAME="${1#*=}" ;;
-      --nginx-port=*) NGINX_PORT="${1#*=}" ;;
-      --nginx-ssl-port=*) NGINX_SSL_PORT="${1#*=}" ;;
-      --blue-port=*) BLUE_PORT="${1#*=}" ;;
-      --green-port=*) GREEN_PORT="${1#*=}" ;;
-      --health-endpoint=*) HEALTH_ENDPOINT="${1#*=}" ;;
-      --health-retries=*) HEALTH_RETRIES="${1#*=}" ;;
-      --health-delay=*) HEALTH_DELAY="${1#*=}" ;;
-      --timeout=*) TIMEOUT="${1#*=}" ;;
-      --database-url=*) DATABASE_URL="${1#*=}" ;;
-      --api-key=*) API_KEY="${1#*=}" ;;
-      --redis-url=*) REDIS_URL="${1#*=}" ;;
-      --setup-shared) SETUP_SHARED=true ;;
-      --skip-migrations) SKIP_MIGRATIONS=true ;;
-      --migrations-cmd=*) MIGRATIONS_CMD="${1#*=}" ;;
-      --force) FORCE_FLAG=true ;;
-      --no-shift) NO_SHIFT=true ;;
-      --all) CLEAN_ALL=true ;;
-      --failed-only) CLEAN_FAILED=true ;;
-      --old-only) CLEAN_OLD=true ;;
-      --dry-run) DRY_RUN=true ;;
-      --keep-old) KEEP_OLD=true ;;
-      --logs-dir=*) LOGS_DIR="${1#*=}" ;;
-      *)
-        if [[ "$1" == "--"* ]]; then
-          log_error "Unknown parameter: $1"
-          return 1
-        fi
-        ;;
+      --app-name=*) APP_NAME="${1#*=}"; processed=1 ;;
+      --image-repo=*) IMAGE_REPO="${1#*=}"; processed=1 ;;
+      --frontend-image-repo=*) FRONTEND_IMAGE_REPO="${1#*=}"; processed=1 ;;
+      --frontend-version=*) FRONTEND_VERSION="${1#*=}"; processed=1 ;;
+      --domain-name=*) DOMAIN_NAME="${1#*=}"; processed=1 ;;
+      --nginx-port=*) NGINX_PORT="${1#*=}"; processed=1 ;;
+      --nginx-ssl-port=*) NGINX_SSL_PORT="${1#*=}"; processed=1 ;;
+      --blue-port=*) BLUE_PORT="${1#*=}"; processed=1 ;;
+      --green-port=*) GREEN_PORT="${1#*=}"; processed=1 ;;
+      --health-endpoint=*) HEALTH_ENDPOINT="${1#*=}"; processed=1 ;;
+      --health-retries=*) HEALTH_RETRIES="${1#*=}"; processed=1 ;;
+      --health-delay=*) HEALTH_DELAY="${1#*=}"; processed=1 ;;
+      --timeout=*) TIMEOUT="${1#*=}"; processed=1 ;;
+      --database-url=*) DATABASE_URL="${1#*=}"; processed=1 ;;
+      --api-key=*) API_KEY="${1#*=}"; processed=1 ;;
+      --redis-url=*) REDIS_URL="${1#*=}"; processed=1 ;;
+      --setup-shared) SETUP_SHARED=true; processed=1 ;;
+      --skip-migrations) SKIP_MIGRATIONS=true; processed=1 ;;
+      --migrations-cmd=*) MIGRATIONS_CMD="${1#*=}"; processed=1 ;;
+      --force) FORCE_FLAG=true; processed=1 ;;
+      --no-shift) NO_SHIFT=true; processed=1 ;;
+      --all) CLEAN_ALL=true; processed=1 ;;
+      --failed-only) CLEAN_FAILED=true; processed=1 ;;
+      --old-only) CLEAN_OLD=true; processed=1 ;;
+      --dry-run) DRY_RUN=true; processed=1 ;;
+      --keep-old) KEEP_OLD=true; processed=1 ;;
+      --logs-dir=*) LOGS_DIR="${1#*=}"; processed=1 ;;
     esac
+    
+    # If not processed as standard argument, check plugin arguments
+    if [ $processed -eq 0 ]; then
+      # Extract argument name without value
+      local arg_name="${1%%=*}"
+      arg_name="${arg_name#--}"
+      
+      # Check if it's a registered plugin argument
+      if [ -n "${REGISTERED_PLUGIN_ARGS[$arg_name]+x}" ]; then
+        # It's a boolean flag (no value)
+        if [[ "$1" == "--$arg_name" ]]; then
+          eval "$arg_name=true"
+          processed=1
+        # It has a value
+        elif [[ "$1" == "--$arg_name="* ]]; then
+          local arg_value="${1#*=}"
+          eval "$arg_name=\"$arg_value\""
+          processed=1
+        fi
+      fi
+    fi
+    
+    # If still not processed, it might be an error
+    if [ $processed -eq 0 ] && [[ "$1" == "--"* ]]; then
+      log_error "Unknown parameter: $1"
+      return 1
+    fi
+    
     shift
   done
   
@@ -100,6 +181,11 @@ parse_parameters() {
   SETUP_SHARED=${SETUP_SHARED:-false}
   SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
   MIGRATIONS_CMD=${MIGRATIONS_CMD:-"npm run migrate"}
+  
+  # Export variables for plugins to use
+  export APP_NAME NGINX_PORT NGINX_SSL_PORT BLUE_PORT GREEN_PORT
+  export HEALTH_ENDPOINT HEALTH_RETRIES HEALTH_DELAY TIMEOUT VERSION
+  export IMAGE_REPO FRONTEND_IMAGE_REPO FRONTEND_VERSION DOMAIN_NAME
   
   return 0
 }
@@ -208,6 +294,15 @@ EOL
   # Add any DB_* or APP_* environment variables
   env | grep -E '^(DB_|APP_)' | sort >> ".env.${env_name}" 2>/dev/null || true
   
+  # Add plugin-registered variables that begin with specific prefixes
+  for key in "${!REGISTERED_PLUGIN_ARGS[@]}"; do
+    if [[ "$key" =~ ^(DB_|APP_|SERVICE_|SSL_|METRICS_|AUTH_) ]]; then
+      if [ -n "${!key:-}" ]; then
+        echo "${key}=${!key}" >> ".env.${env_name}"
+      fi
+    fi
+  done
+  
   # Set secure permissions
   chmod 600 ".env.${env_name}"
   log_info "Created .env.${env_name} file with deployment variables"
@@ -259,6 +354,9 @@ update_traffic_distribution() {
   
   local docker_compose=$(get_docker_compose_cmd)
   $docker_compose restart nginx || log_warning "Failed to restart nginx"
+  
+  # Run the traffic shift hook
+  run_hook "post_traffic_shift" "$VERSION" "${TARGET_ENV:-unknown}" "$blue_weight" "$green_weight"
 }
 
 # Check health of an endpoint
@@ -395,13 +493,7 @@ run_hook() {
     return 0
   fi
   
-  # Load all plugins
-  for plugin in plugins/*.sh; do
-    if [ -f "$plugin" ]; then
-      source "$plugin"
-    fi
-  done
-  
+  # Run the hook if defined
   if type "hook_${hook_name}" &>/dev/null; then
     log_info "Running hook: $hook_name"
     "hook_${hook_name}" "$@"
