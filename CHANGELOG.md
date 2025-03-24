@@ -4,6 +4,12 @@
 
 ### Major Enhancements
 
+- **Namespace Management**: Complete refactoring to use proper namespacing
+  - All internal functions prefixed with `bgd_` to avoid conflicts
+  - All core files prefixed with `bgd-` (e.g., `bgd-core.sh`)
+  - **Removed backward compatibility wrapper scripts**
+  - Plugin system namespacing for extensibility
+
 - **Plugin System**: Complete overhaul of the plugin architecture with argument registration
   - New hook system for extending deployment process
   - Plugin argument registration mechanism

@@ -27,6 +27,7 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Troubleshooting](#troubleshooting)
 - [Security Best Practices](#security-best-practices)
 - [Changelog](#changelog)
+- [Namespace Management](#namespace-management)
 
 ## Overview
 
@@ -351,7 +352,7 @@ jobs:
             cd /app/myapp
             
             # Extract toolkit if not already installed
-            if [ ! -f "./scripts/deploy.sh" ]; then
+            if [ ! -f "./scripts/bgd-deploy.sh" ]; then
               tar -xzf toolkit.tar.gz
               chmod +x ./install.sh
               ./install.sh myapp
@@ -375,10 +376,10 @@ jobs:
             export SERVICE_REGISTRY_ENABLED="$SERVICE_REGISTRY_ENABLED"
             
             # Clean up failed deployments
-            ./scripts/cleanup.sh --app-name=myapp --failed-only
+            ./scripts/bgd-cleanup.sh --app-name=myapp --failed-only
             
             # Run the deployment
-            ./scripts/deploy.sh "$VERSION" \
+            ./scripts/bgd-deploy.sh "$VERSION" \
               --app-name=myapp \
               --image-repo=$IMAGE_REPO \
               --nginx-port=80 \
@@ -400,7 +401,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /app/myapp
-            ./scripts/cleanup.sh --app-name=myapp --old-only
+            ./scripts/bgd-cleanup.sh --app-name=myapp --old-only
 ```
 
 ### Configuring Your Deployment
@@ -408,7 +409,7 @@ jobs:
 The blue/green deployment system uses command-line parameters for configuration:
 
 ```yaml
-./scripts/deploy.sh "$VERSION" \
+./scripts/bgd-deploy.sh "$VERSION" \
   --app-name=myapp \
   --image-repo=ghcr.io/myusername/myproject \
   --nginx-port=80 \
@@ -457,7 +458,7 @@ For organizations with multiple applications, you can set up multiple deployment
       cd /app/soluigi/backend
       
       # Extract toolkit if not already installed
-      if [ ! -f "./scripts/deploy.sh" ]; then
+      if [ ! -f "./scripts/bgd-deploy.sh" ]; then
         mkdir -p toolkit && cd toolkit
         curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v2.0.0.tar.gz | tar xz --strip-components=1
         chmod +x ./install.sh
@@ -466,7 +467,7 @@ For organizations with multiple applications, you can set up multiple deployment
       fi
       
       # Deploy backend
-      ./scripts/deploy.sh "$VERSION" \
+      ./scripts/bgd-deploy.sh "$VERSION" \
         --app-name=backend \
         --image-repo=soluigi/backend \
         --nginx-port=8080 \
@@ -650,7 +651,7 @@ If your main service has a different name (e.g., "web", "api", or "frontend"), i
       cd /app/myapp
       
       # Extract toolkit if not already installed
-      if [ ! -f "./scripts/deploy.sh" ]; then
+      if [ ! -f "./scripts/bgd-deploy.sh" ]; then
         tar -xzf toolkit.tar.gz
         chmod +x ./install.sh
         ./install.sh myapp
@@ -693,7 +694,7 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ### Deploy
 
 ```bash
-./scripts/deploy.sh VERSION [OPTIONS]
+./scripts/bgd-deploy.sh VERSION [OPTIONS]
 
 # Options:
 #   --app-name=NAME           Application name
@@ -719,14 +720,14 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 #   --no-shift                Don't shift traffic automatically (manual cutover)
 
 # Examples:
-./scripts/deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
-./scripts/deploy.sh v1.1 --app-name=myapp --domain-name=example.com --setup-shared
+./scripts/bgd-deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
+./scripts/bgd-deploy.sh v1.1 --app-name=myapp --domain-name=example.com --setup-shared
 ```
 
 ### Cutover
 
 ```bash
-./scripts/cutover.sh [blue|green] [OPTIONS]
+./scripts/bgd-cutover.sh [blue|green] [OPTIONS]
 
 # Options:
 #   --app-name=NAME       Application name
@@ -741,13 +742,13 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 #   --health-delay=SEC    Delay between health checks
 
 # Example:
-./scripts/cutover.sh green --app-name=myapp --domain-name=example.com
+./scripts/bgd-cutover.sh green --app-name=myapp --domain-name=example.com
 ```
 
 ### Rollback
 
 ```bash
-./scripts/rollback.sh [OPTIONS]
+./scripts/bgd-rollback.sh [OPTIONS]
 
 # Options:
 #   --app-name=NAME       Application name
@@ -760,13 +761,13 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 #   --health-delay=SEC    Delay between health checks
 
 # Example:
-./scripts/rollback.sh --app-name=myapp
+./scripts/bgd-rollback.sh --app-name=myapp
 ```
 
 ### Cleanup
 
 ```bash
-./scripts/cleanup.sh [OPTIONS]
+./scripts/bgd-cleanup.sh [OPTIONS]
 
 # Options:
 #   --app-name=NAME       Application name
@@ -776,13 +777,13 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 #   --dry-run             Only show what would be cleaned without actually removing anything
 
 # Example:
-./scripts/cleanup.sh --app-name=myapp --failed-only
+./scripts/bgd-cleanup.sh --app-name=myapp --failed-only
 ```
 
 ### Health Check
 
 ```bash
-./scripts/health-check.sh [ENDPOINT] [OPTIONS]
+./scripts/bgd-health-check.sh [ENDPOINT] [OPTIONS]
 
 # Arguments:
 #   ENDPOINT              URL to check (default: http://localhost:3000/health)
@@ -794,7 +795,7 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 #   --timeout=SEC         Timeout for each request (default: 5)
 
 # Example:
-./scripts/health-check.sh http://localhost:8081/health --retries=10 --delay=5
+./scripts/bgd-health-check.sh http://localhost:8081/health --retries=10 --delay=5
 ```
 
 ## Plugin System
@@ -824,12 +825,12 @@ register_plugin_argument "plugin-name" "ARG_NAME" "default-value"
 These arguments can then be passed to the deployment script:
 
 ```bash
-./scripts/deploy.sh v1.0 --app-name=myapp --arg-name=custom-value
+./scripts/bgd-deploy.sh v1.0 --app-name=myapp --arg-name=custom-value
 ```
 
 ### Database Migrations
 
-The database migrations plugin (`db-migrations.sh`) provides advanced database migration capabilities:
+The database migrations plugin (`bgd-db-migrations.sh`) provides advanced database migration capabilities:
 
 - Schema and full database backups
 - Migration history tracking
@@ -840,7 +841,7 @@ The database migrations plugin (`db-migrations.sh`) provides advanced database m
 
 ```bash
 # Enable database migrations with shadow database
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --database-url="postgresql://user:pass@host/db" \
   --db-shadow-enabled=true \
@@ -861,7 +862,7 @@ This approach ensures zero-downtime during schema changes, as the application on
 
 ### Service Discovery
 
-The service discovery plugin (`service-discovery.sh`) enables automatic service registration and discovery:
+The service discovery plugin (`bgd-service-discovery.sh`) enables automatic service registration and discovery:
 
 - Registers services with internal and/or external registries
 - Generates service URLs for environment variables
@@ -871,7 +872,7 @@ The service discovery plugin (`service-discovery.sh`) enables automatic service 
 
 ```bash
 # Enable service discovery
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --service-registry-enabled=true \
   --service-registry-url="http://registry:8080" \
@@ -887,7 +888,7 @@ The service discovery plugin (`service-discovery.sh`) enables automatic service 
 
 ### SSL Automation
 
-The SSL automation plugin (`ssl-automation.sh`) handles SSL certificate management with Let's Encrypt:
+The SSL automation plugin (`bgd-ssl-automation.sh`) handles SSL certificate management with Let's Encrypt:
 
 - Automatic certificate generation and renewal
 - ACME challenge configuration
@@ -897,7 +898,7 @@ The SSL automation plugin (`ssl-automation.sh`) handles SSL certificate manageme
 
 ```bash
 # Enable SSL automation
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --domain-name="example.com" \
   --certbot-email="admin@example.com" \
@@ -915,7 +916,7 @@ The SSL automation plugin (`ssl-automation.sh`) handles SSL certificate manageme
 
 ### Audit Logging
 
-The audit logging plugin (`audit-logging.sh`) provides comprehensive deployment event tracking:
+The audit logging plugin (`bgd-audit-logging.sh`) provides comprehensive deployment event tracking:
 
 - Records deployment events with timestamps
 - Captures environment details
@@ -926,7 +927,7 @@ The audit logging plugin (`audit-logging.sh`) provides comprehensive deployment 
 
 ```bash
 # Enable audit logging with Slack notifications
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
   --audit-log-level="info"
@@ -1001,7 +1002,7 @@ The system distinguishes between two types of services:
 To set up shared services during initial deployment:
 
 ```bash
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --setup-shared \
   --domain-name=example.com
@@ -1024,7 +1025,7 @@ The system supports routing traffic to different services based on domains:
 
 ```bash
 # Configure domain-based routing
-./scripts/deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --domain-name="example.com" \
   --ssl-enabled=true
@@ -1159,9 +1160,9 @@ Always include rollback steps in your pipeline for when deployments fail:
       cd /app/myapp
       
       # Attempt deployment
-      if ! ./scripts/deploy.sh "$VERSION" --app-name=myapp --image-repo=$IMAGE_REPO; then
+      if ! ./scripts/bgd-deploy.sh "$VERSION" --app-name=myapp --image-repo=$IMAGE_REPO; then
         echo "Deployment failed, rolling back..."
-        ./scripts/rollback.sh --app-name=myapp --force
+        ./scripts/bgd-rollback.sh --app-name=myapp --force
         exit 1
       fi
 ```
@@ -1213,3 +1214,53 @@ Follow these security best practices in your CI/CD pipelines:
 5. **Validate deployments**: Always run health checks after deployment to verify success
 6. **Secure plugin arguments**: Use CI/CD secrets for sensitive plugin arguments
 7. **Rotate credentials**: Regularly rotate API keys, database passwords, and other credentials
+
+## Namespace Management
+
+The Blue/Green Deployment System uses proper namespacing to avoid conflicts with user code:
+
+### File Organization
+
+- **Core Files**: All toolkit core files are prefixed with `bgd-` (e.g., `bgd-core.sh`, `bgd-deploy.sh`)
+- **Plugin Files**: All plugin files follow the same convention (e.g., `bgd-db-migrations.sh`)
+- **No Wrapper Scripts**: There are no backward compatibility wrapper scripts
+
+### Function Namespacing
+
+- **All Functions**: All functions use the `bgd_` prefix (e.g., `bgd_log_info()`, `bgd_create_env_file()`)
+- **Plugin Hooks**: All plugin hooks follow the same convention (e.g., `bgd_hook_pre_deploy()`)
+
+### Variable Namespacing
+
+- **User-Facing Variables**: Variables intended for users remain simple (e.g., `APP_NAME`, `VERSION`)
+- **Internal Variables**: Variables used by the toolkit are prefixed with `BGD_` (e.g., `BGD_LOGS_DIR`)
+
+### Directory Management
+
+The toolkit manages these directories:
+- `scripts/`: Contains core scripts
+- `plugins/`: Contains plugin scripts
+- `config/templates/`: Contains configuration templates
+- `logs/`: Contains deployment logs
+- `certs/`: Contains SSL certificates
+
+### Using Toolkit Functions in Custom Scripts
+
+If you need to use toolkit functions in your custom scripts, source the core file:
+
+```bash
+#!/bin/bash
+
+# Source the core script
+source "./scripts/bgd-core.sh"
+
+# Use toolkit functions
+bgd_log_info "Starting custom operation"
+bgd_ensure_directory "./my-custom-dir"
+bgd_check_health "http://localhost:8080/health" 3 5
+
+# Run your custom logic
+# ...
+
+bgd_log_success "Custom operation completed"
+```

@@ -22,7 +22,7 @@ This example shows a basic deployment of a simple application:
 
 ```bash
 # Initial deployment
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -31,10 +31,10 @@ This example shows a basic deployment of a simple application:
   --health-endpoint=/health
 
 # After deployment completes, complete the cutover
-./scripts/cutover.sh blue --app-name=myapp
+./scripts/bgd-cutover.sh blue --app-name=myapp
 
 # For the next deployment (to the green environment)
-./scripts/deploy.sh v1.0.1 \
+./scripts/bgd-deploy.sh v1.0.1 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -43,7 +43,7 @@ This example shows a basic deployment of a simple application:
   --health-endpoint=/health
 
 # Complete the cutover to the new version
-./scripts/cutover.sh green --app-name=myapp
+./scripts/bgd-cutover.sh green --app-name=myapp
 ```
 
 ### GitHub Actions Workflow
@@ -75,7 +75,7 @@ jobs:
             cd /app/myapp
             
             # Deploy
-            ./scripts/deploy.sh "${{ steps.versioning.outputs.version }}" \
+            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
               --app-name=myapp \
               --image-repo=ghcr.io/myorg/myapp \
               --nginx-port=80 \
@@ -84,7 +84,7 @@ jobs:
               --health-endpoint=/health
             
             # Complete the cutover
-            ./scripts/cutover.sh $(grep -q blue nginx.conf && echo "green" || echo "blue") \
+            ./scripts/bgd-cutover.sh $(grep -q blue nginx.conf && echo "green" || echo "blue") \
               --app-name=myapp
 ```
 
@@ -94,7 +94,7 @@ This example shows deploying multiple containers with shared services:
 
 ```bash
 # Initial deployment with shared services setup
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/backend \
   --frontend-image-repo=ghcr.io/myorg/frontend \
@@ -106,7 +106,7 @@ This example shows deploying multiple containers with shared services:
   --database-url="postgresql://user:pass@localhost/myapp"
 
 # Subsequent deployment
-./scripts/deploy.sh v1.0.1 \
+./scripts/bgd-deploy.sh v1.0.1 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/backend \
   --frontend-image-repo=ghcr.io/myorg/frontend \
@@ -224,7 +224,7 @@ This example demonstrates using the database migrations plugin for zero-downtime
 
 ```bash
 # Deploy with database migrations
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -260,7 +260,7 @@ exit $?
 Then use it in your deployment:
 
 ```bash
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --database-url="postgresql://user:pass@localhost/myapp" \
@@ -302,7 +302,7 @@ jobs:
             export DATABASE_URL="$DATABASE_URL"
             
             # Deploy with migrations
-            ./scripts/deploy.sh "${{ steps.versioning.outputs.version }}" \
+            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
               --app-name=myapp \
               --image-repo=ghcr.io/myorg/myapp \
               --db-shadow-enabled=true
@@ -314,7 +314,7 @@ This example demonstrates using the service discovery plugin:
 
 ```bash
 # Deploy with service discovery
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -332,7 +332,7 @@ For applications with multiple services that need to discover each other:
 
 ```bash
 # Deploy first service
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=auth-service \
   --image-repo=ghcr.io/myorg/auth-service \
   --nginx-port=8000 \
@@ -343,7 +343,7 @@ For applications with multiple services that need to discover each other:
   --service-registry-url="http://registry.example.com"
 
 # Deploy second service
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=api-service \
   --image-repo=ghcr.io/myorg/api-service \
   --nginx-port=8010 \
@@ -360,7 +360,7 @@ This example demonstrates using the SSL automation plugin with Let's Encrypt:
 
 ```bash
 # Deploy with SSL automation
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -379,7 +379,7 @@ For applications that need SSL for multiple domains:
 
 ```bash
 # Deploy with multiple domains
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -422,7 +422,7 @@ jobs:
             cd /app/myapp
             
             # Deploy with SSL
-            ./scripts/deploy.sh "${{ steps.versioning.outputs.version }}" \
+            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
               --app-name=myapp \
               --image-repo=ghcr.io/myorg/myapp \
               --domain-name="${{ secrets.DOMAIN_NAME }}" \
@@ -436,7 +436,7 @@ This example demonstrates using the audit logging plugin with Slack notification
 
 ```bash
 # Deploy with audit logging
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --nginx-port=80 \
@@ -453,19 +453,19 @@ You can create a custom notification plugin:
 
 ```bash
 #!/bin/bash
-# plugins/teams-notification.sh
+# plugins/bgd-teams-notification.sh
 
 # Register plugin arguments
-register_plugin_argument "teams-notification" "TEAMS_WEBHOOK" ""
-register_plugin_argument "teams-notification" "NOTIFY_CHANNEL" "Deployments"
+bgd_register_plugin_argument "teams-notification" "TEAMS_WEBHOOK" ""
+bgd_register_plugin_argument "teams-notification" "NOTIFY_CHANNEL" "Deployments"
 
 # Implement hooks
-hook_post_deploy() {
+bgd_hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
   if [ -n "${TEAMS_WEBHOOK:-}" ]; then
-    log_info "Sending deployment notification to Microsoft Teams"
+    bgd_log_info "Sending deployment notification to Microsoft Teams"
     
     # Create JSON payload
     local payload=$(cat << EOF
@@ -494,11 +494,11 @@ EOF
   return 0
 }
 
-hook_post_rollback() {
+bgd_hook_post_rollback() {
   local rollback_env="$1"
   
   if [ -n "${TEAMS_WEBHOOK:-}" ]; then
-    log_info "Sending rollback notification to Microsoft Teams"
+    bgd_log_info "Sending rollback notification to Microsoft Teams"
     
     # Create JSON payload
     local payload=$(cat << EOF
@@ -530,7 +530,7 @@ EOF
 Then use it in your deployment:
 
 ```bash
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --teams-webhook="https://outlook.office.com/webhook/XXX" \
@@ -543,15 +543,15 @@ This example demonstrates creating a custom plugin for performance monitoring:
 
 ```bash
 #!/bin/bash
-# plugins/performance-monitor.sh
+# plugins/bgd-performance-monitor.sh
 
 # Register plugin arguments
-register_plugin_argument "performance-monitor" "MONITOR_ENABLED" "false"
-register_plugin_argument "performance-monitor" "MONITOR_ENDPOINT" ""
-register_plugin_argument "performance-monitor" "MONITOR_API_KEY" ""
+bgd_register_plugin_argument "performance-monitor" "MONITOR_ENABLED" "false"
+bgd_register_plugin_argument "performance-monitor" "MONITOR_ENDPOINT" ""
+bgd_register_plugin_argument "performance-monitor" "MONITOR_API_KEY" ""
 
 # Implement hooks
-hook_post_deploy() {
+bgd_hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
@@ -559,7 +559,7 @@ hook_post_deploy() {
     return 0
   fi
   
-  log_info "Registering deployment with performance monitor"
+  bgd_log_info "Registering deployment with performance monitor"
   
   # Create payload
   local payload=$(cat << EOF
@@ -583,7 +583,7 @@ EOF
   return $?
 }
 
-hook_post_cutover() {
+bgd_hook_post_cutover() {
   local new_env="$1"
   local old_env="$2"
   
@@ -591,7 +591,7 @@ hook_post_cutover() {
     return 0
   fi
   
-  log_info "Registering cutover with performance monitor"
+  bgd_log_info "Registering cutover with performance monitor"
   
   # Create payload
   local payload=$(cat << EOF
@@ -616,7 +616,7 @@ EOF
 }
 
 # Add a pre-cutover hook to check for performance degradation
-hook_pre_cutover() {
+bgd_hook_pre_cutover() {
   local new_env="$1"
   local old_env="$2"
   
@@ -624,7 +624,7 @@ hook_pre_cutover() {
     return 0
   fi
   
-  log_info "Checking performance metrics before cutover"
+  bgd_log_info "Checking performance metrics before cutover"
   
   # Query performance metrics API
   local metrics=$(curl -s -X GET \
@@ -635,17 +635,17 @@ hook_pre_cutover() {
   local error_rate=$(echo "$metrics" | jq -r '.error_rate')
   local response_time=$(echo "$metrics" | jq -r '.avg_response_time')
   
-  log_info "New environment metrics: Error rate: $error_rate%, Response time: ${response_time}ms"
+  bgd_log_info "New environment metrics: Error rate: $error_rate%, Response time: ${response_time}ms"
   
   # If error rate is too high, abort cutover
   if (( $(echo "$error_rate > 5.0" | bc -l) )); then
-    log_error "Error rate is too high ($error_rate%). Aborting cutover."
+    bgd_log_error "Error rate is too high ($error_rate%). Aborting cutover."
     return 1
   fi
   
   # If response time is too high, warn but continue
   if (( $(echo "$response_time > 500" | bc -l) )); then
-    log_warning "Response time is high (${response_time}ms). Proceeding with caution."
+    bgd_log_warning "Response time is high (${response_time}ms). Proceeding with caution."
   fi
   
   return 0
@@ -655,7 +655,7 @@ hook_pre_cutover() {
 Then use it in your deployment:
 
 ```bash
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
   --monitor-enabled=true \
@@ -671,7 +671,7 @@ This example demonstrates a complete multi-environment setup with all plugins en
 
 ```bash
 # Initial deployment with all features
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/backend \
   --frontend-image-repo=ghcr.io/myorg/frontend \
@@ -699,7 +699,7 @@ This example shows how to deploy a separate frontend and backend:
 
 ```bash
 # Deploy backend
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=backend \
   --image-repo=ghcr.io/myorg/backend \
   --nginx-port=8000 \
@@ -711,7 +711,7 @@ This example shows how to deploy a separate frontend and backend:
   --ssl-enabled=true
 
 # Deploy frontend
-./scripts/deploy.sh v2.0.0 \
+./scripts/bgd-deploy.sh v2.0.0 \
   --app-name=frontend \
   --image-repo=ghcr.io/myorg/frontend \
   --nginx-port=80 \
@@ -729,7 +729,7 @@ This example shows how to manage multiple applications on the same server:
 
 ```bash
 # Deploy first application
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=app1 \
   --image-repo=ghcr.io/myorg/app1 \
   --nginx-port=8001 \
@@ -740,7 +740,7 @@ This example shows how to manage multiple applications on the same server:
   --ssl-enabled=true
 
 # Deploy second application
-./scripts/deploy.sh v1.0.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=app2 \
   --image-repo=ghcr.io/myorg/app2 \
   --nginx-port=8002 \

@@ -1,32 +1,66 @@
 #!/bin/bash
 set -euo pipefail
 
-# Description: Utility functions for deployment scripts
+# Description: Core utility functions for the blue/green deployment system
 # 
 # This file contains common functions used across the blue/green deployment system.
 # It handles parameter parsing, logging, environment management, and other utilities.
 
 # Define logs directory
-LOGS_DIR="./logs"
+BGD_LOGS_DIR="./logs"
+
+# Define lock file location
+BGD_LOCK_FILE="/tmp/bgd-${APP_NAME:-app}.lock"
 
 # Plugin system support
-declare -A REGISTERED_PLUGIN_ARGS
+declare -A BGD_REGISTERED_PLUGIN_ARGS
 
 # Logging functions
-log_info() {
+bgd_log_info() {
   echo -e "\033[0;34m[INFO]\033[0m $1"
 }
 
-log_warning() {
+bgd_log_warning() {
   echo -e "\033[0;33m[WARN]\033[0m $1"
 }
 
-log_error() {
+bgd_log_error() {
   echo -e "\033[0;31m[ERROR]\033[0m $1"
 }
 
-log_success() {
+bgd_log_success() {
   echo -e "\033[0;32m[SUCCESS]\033[0m $1"
+}
+
+# Acquire lock for operations
+# Returns:
+#   0 if lock acquired, 1 if failed to acquire lock
+bgd_acquire_lock() {
+  local timeout="${1:-60}" # Default timeout of 60 seconds
+  local start_time=$(date +%s)
+  local end_time=$((start_time + timeout))
+
+  # Try to create lock file
+  while [ $(date +%s) -lt $end_time ]; do
+    if mkdir "$BGD_LOCK_FILE" 2>/dev/null; then
+      # Store PID in lock file
+      echo $$ > "$BGD_LOCK_FILE/pid"
+      bgd_log_info "Lock acquired for ${APP_NAME:-app}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  bgd_log_error "Failed to acquire lock after ${timeout}s. Another deployment might be in progress."
+  return 1
+}
+
+# Release lock
+bgd_release_lock() {
+  if [ -d "$BGD_LOCK_FILE" ]; then
+    rm -rf "$BGD_LOCK_FILE"
+    bgd_log_info "Lock released for ${APP_NAME:-app}"
+  fi
 }
 
 # Register a plugin argument
@@ -35,12 +69,12 @@ log_success() {
 #   $1 - Plugin name
 #   $2 - Argument name
 #   $3 - Default value
-register_plugin_argument() {
+bgd_register_plugin_argument() {
   local plugin_name="$1"
   local arg_name="$2"
   local default_value="$3"
   
-  REGISTERED_PLUGIN_ARGS["$arg_name"]="$default_value"
+  BGD_REGISTERED_PLUGIN_ARGS["$arg_name"]="$default_value"
   
   # Create a global variable with the default value if it doesn't exist
   if [ -z "${!arg_name:-}" ]; then
@@ -49,30 +83,30 @@ register_plugin_argument() {
 }
 
 # Load all plugins and register their arguments
-load_plugins() {
+bgd_load_plugins() {
   # Check if plugins directory exists
   if [ ! -d "plugins" ]; then
     return 0
   fi
   
   # Check if there are any plugin files
-  local plugin_count=$(find plugins -name "*.sh" -type f 2>/dev/null | wc -l)
+  local plugin_count=$(find plugins -name "bgd-*.sh" -type f 2>/dev/null | wc -l)
   if [ "$plugin_count" -eq 0 ]; then
     return 0
   fi
   
-  log_info "Loading plugins and registering arguments..."
+  bgd_log_info "Loading plugins and registering arguments..."
   
   # Load all plugins
-  for plugin in plugins/*.sh; do
+  for plugin in plugins/bgd-*.sh; do
     if [ -f "$plugin" ]; then
       plugin_name=$(basename "$plugin" .sh)
-      log_info "Loading plugin: $plugin_name"
+      bgd_log_info "Loading plugin: $plugin_name"
       source "$plugin"
       
       # Call register function if it exists
-      if type "register_${plugin_name}_arguments" &>/dev/null; then
-        "register_${plugin_name}_arguments"
+      if type "bgd_register_${plugin_name#bgd-}_arguments" &>/dev/null; then
+        "bgd_register_${plugin_name#bgd-}_arguments"
       fi
     fi
   done
@@ -81,14 +115,14 @@ load_plugins() {
 # Parse command-line parameters
 # 
 # Example usage:
-#   parse_parameters "$@"
+#   bgd_parse_parameters "$@"
 #   echo "App name: $APP_NAME"
 #
 # Returns:
 #   0 if successful, 1 if invalid parameters
-parse_parameters() {
+bgd_parse_parameters() {
   # Load plugins first to register their arguments
-  load_plugins
+  bgd_load_plugins
   
   # Process standard and plugin arguments
   while [[ "$#" -gt 0 ]]; do
@@ -122,7 +156,7 @@ parse_parameters() {
       --old-only) CLEAN_OLD=true; processed=1 ;;
       --dry-run) DRY_RUN=true; processed=1 ;;
       --keep-old) KEEP_OLD=true; processed=1 ;;
-      --logs-dir=*) LOGS_DIR="${1#*=}"; processed=1 ;;
+      --logs-dir=*) BGD_LOGS_DIR="${1#*=}"; processed=1 ;;
     esac
     
     # If not processed as standard argument, check plugin arguments
@@ -133,7 +167,7 @@ parse_parameters() {
       local arg_name_upper=$(echo "$arg_name" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
       
       # Check if it's a registered plugin argument
-      if [ -n "${REGISTERED_PLUGIN_ARGS[$arg_name_upper]+x}" ]; then
+      if [ -n "${BGD_REGISTERED_PLUGIN_ARGS[$arg_name_upper]+x}" ]; then
         # It's a boolean flag (no value)
         if [[ "$1" == "--$arg_name" ]]; then
           eval "$arg_name_upper=true"
@@ -149,7 +183,7 @@ parse_parameters() {
     
     # If still not processed, it might be an error
     if [ $processed -eq 0 ] && [[ "$1" == "--"* ]]; then
-      log_error "Unknown parameter: $1"
+      bgd_log_error "Unknown parameter: $1"
       return 1
     fi
     
@@ -195,9 +229,9 @@ parse_parameters() {
 # 
 # Returns:
 #   0 if Docker is running, 1 otherwise
-ensure_docker_running() {
+bgd_ensure_docker_running() {
   if ! docker info > /dev/null 2>&1; then
-    log_error "Docker is not running or not accessible"
+    bgd_log_error "Docker is not running or not accessible"
     return 1
   fi
   return 0
@@ -207,13 +241,13 @@ ensure_docker_running() {
 # 
 # Returns:
 #   Docker Compose command string or error code 1
-get_docker_compose_cmd() {
+bgd_get_docker_compose_cmd() {
   if command -v docker-compose &> /dev/null; then
     echo "docker-compose"
   elif docker compose version &> /dev/null; then
     echo "docker compose"
   else
-    log_error "Docker Compose not found"
+    bgd_log_error "Docker Compose not found"
     return 1
   fi
 }
@@ -222,11 +256,11 @@ get_docker_compose_cmd() {
 # 
 # Arguments:
 #   $1 - Directory path to create
-ensure_directory() {
+bgd_ensure_directory() {
   local dir_path=$1
   if [ ! -d "$dir_path" ]; then
     mkdir -p "$dir_path"
-    log_info "Created directory: $dir_path"
+    bgd_log_info "Created directory: $dir_path"
   fi
 }
 
@@ -234,9 +268,12 @@ ensure_directory() {
 # 
 # Returns:
 #   String in the format "active_env target_env"
-get_environments() {
+bgd_get_environments() {
+  # Get Docker Compose command once
+  local docker_compose=$(bgd_get_docker_compose_cmd)
+  
   # Check if blue is running and part of nginx config
-  if docker-compose -p ${APP_NAME}-blue ps 2>/dev/null | grep -q "Up"; then
+  if $docker_compose -p ${APP_NAME}-blue ps 2>/dev/null | grep -q "Up"; then
     if grep -q "${APP_NAME}-blue" nginx.conf 2>/dev/null; then
       echo "blue green"  # blue active, green target
       return 0
@@ -244,7 +281,7 @@ get_environments() {
   fi
   
   # Check if green is running and part of nginx config
-  if docker-compose -p ${APP_NAME}-green ps 2>/dev/null | grep -q "Up"; then
+  if $docker_compose -p ${APP_NAME}-green ps 2>/dev/null | grep -q "Up"; then
     if grep -q "${APP_NAME}-green" nginx.conf 2>/dev/null; then
       echo "green blue"  # green active, blue target
       return 0
@@ -264,7 +301,7 @@ get_environments() {
 #
 # Description:
 #   Creates .env file for Docker Compose with environment-specific settings
-create_env_file() {
+bgd_create_env_file() {
   local env_name=$1
   local port=$2
 
@@ -296,7 +333,7 @@ EOL
   env | grep -E '^(DB_|APP_)' | sort >> ".env.${env_name}" 2>/dev/null || true
   
   # Add plugin-registered variables that begin with specific prefixes
-  for key in "${!REGISTERED_PLUGIN_ARGS[@]}"; do
+  for key in "${!BGD_REGISTERED_PLUGIN_ARGS[@]}"; do
     if [[ "$key" =~ ^(DB_|APP_|SERVICE_|SSL_|METRICS_|AUTH_) ]]; then
       if [ -n "${!key:-}" ]; then
         echo "${key}=${!key}" >> ".env.${env_name}"
@@ -306,7 +343,7 @@ EOL
   
   # Set secure permissions
   chmod 600 ".env.${env_name}"
-  log_info "Created .env.${env_name} file with deployment variables"
+  bgd_log_info "Created .env.${env_name} file with deployment variables"
 }
 
 # Check if a container is healthy
@@ -316,7 +353,7 @@ EOL
 #
 # Returns:
 #   0 if container is healthy, 1 otherwise
-is_container_healthy() {
+bgd_is_container_healthy() {
   local container=$1
   local health_status=$(docker inspect --format='{{.State.Health.Status}}' "$container" 2>/dev/null || echo "not found")
   
@@ -336,14 +373,14 @@ is_container_healthy() {
 #   $4 - Output file path
 #
 # Example:
-#   update_traffic_distribution 8 2 "./config/templates/nginx-multi-domain.conf.template" "./nginx.conf"
-update_traffic_distribution() {
+#   bgd_update_traffic_distribution 8 2 "./config/templates/nginx-multi-domain.conf.template" "./nginx.conf"
+bgd_update_traffic_distribution() {
   local blue_weight="$1"
   local green_weight="$2"
   local nginx_template="$3"
   local nginx_conf="$4"
   
-  log_info "Updating traffic distribution: blue=$blue_weight, green=$green_weight"
+  bgd_log_info "Updating traffic distribution: blue=$blue_weight, green=$green_weight"
   
   cat "$nginx_template" | \
     sed -e "s/BLUE_WEIGHT/$blue_weight/g" | \
@@ -353,11 +390,13 @@ update_traffic_distribution() {
     sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
     sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT:-443}/g" > "$nginx_conf"
   
-  local docker_compose=$(get_docker_compose_cmd)
-  $docker_compose restart nginx || log_warning "Failed to restart nginx"
+  # Get Docker Compose command
+  local docker_compose=$(bgd_get_docker_compose_cmd)
+  # Restart nginx to apply new configuration
+  $docker_compose restart nginx || bgd_log_warning "Failed to restart nginx"
   
-  # Run the traffic shift hook
-  run_hook "post_traffic_shift" "$VERSION" "${TARGET_ENV:-unknown}" "$blue_weight" "$green_weight"
+  # Run the traffic shift hook directly using the hook system
+  bgd_run_hook "post_traffic_shift" "${VERSION:-unknown}" "${TARGET_ENV:-unknown}" "$blue_weight" "$green_weight"
 }
 
 # Check health of an endpoint
@@ -372,30 +411,30 @@ update_traffic_distribution() {
 #   0 if endpoint is healthy, 1 otherwise
 #
 # Example:
-#   check_health "http://localhost:8080/health" 5 10 3
-check_health() {
+#   bgd_check_health "http://localhost:8080/health" 5 10 3
+bgd_check_health() {
   local endpoint="$1"
   local retries="${2:-$HEALTH_RETRIES}"
   local delay="${3:-$HEALTH_DELAY}"
   local timeout="${4:-$TIMEOUT}"
   
-  log_info "Checking health of $endpoint (retries: $retries, delay: ${delay}s)"
+  bgd_log_info "Checking health of $endpoint (retries: $retries, delay: ${delay}s)"
   
   local count=0
   while [ $count -lt $retries ]; do
     if curl -s -f -m "$timeout" "$endpoint" > /dev/null 2>&1; then
-      log_success "Health check passed for $endpoint"
+      bgd_log_success "Health check passed for $endpoint"
       return 0
     else
       count=$((count + 1))
       if [ $count -lt $retries ]; then
-        log_info "Health check failed, retrying in ${delay}s... ($(($count))/$retries)"
+        bgd_log_info "Health check failed, retrying in ${delay}s... ($(($count))/$retries)"
         sleep $delay
       fi
     fi
   done
   
-  log_error "Health check failed for $endpoint after $retries attempts"
+  bgd_log_error "Health check failed for $endpoint after $retries attempts"
   return 1
 }
 
@@ -411,23 +450,23 @@ check_health() {
 #   0 if all endpoints are healthy, 1 if any fails
 #
 # Example:
-#   check_multiple_health "http://localhost:8080/health http://localhost:8081/health" 5 10 3
-check_multiple_health() {
+#   bgd_check_multiple_health "http://localhost:8080/health http://localhost:8081/health" 5 10 3
+bgd_check_multiple_health() {
   local endpoints=($1)
   local retries="${2:-$HEALTH_RETRIES}"
   local delay="${3:-$HEALTH_DELAY}"
   local timeout="${4:-$TIMEOUT}"
   
-  log_info "Checking health of multiple endpoints (${#endpoints[@]} total)"
+  bgd_log_info "Checking health of multiple endpoints (${#endpoints[@]} total)"
   
   for endpoint in "${endpoints[@]}"; do
-    if ! check_health "$endpoint" "$retries" "$delay" "$timeout"; then
-      log_error "Health check failed for $endpoint"
+    if ! bgd_check_health "$endpoint" "$retries" "$delay" "$timeout"; then
+      bgd_log_error "Health check failed for $endpoint"
       return 1
     fi
   done
   
-  log_success "All endpoints are healthy"
+  bgd_log_success "All endpoints are healthy"
   return 0
 }
 
@@ -439,15 +478,15 @@ check_multiple_health() {
 #   $3 - Status
 #
 # Example:
-#   log_deployment_step "v1.0" "deployment_started" "started"
-log_deployment_step() {
+#   bgd_log_deployment_step "v1.0" "deployment_started" "started"
+bgd_log_deployment_step() {
   local deployment_id="$1"
   local step="$2"
   local status="$3"
   
   # Ensure logs directory exists
-  ensure_directory "$LOGS_DIR"
-  echo "$(date '+%Y-%m-%d %H:%M:%S') [$status] $step" >> "$LOGS_DIR/${APP_NAME}-${deployment_id}.log"
+  bgd_ensure_directory "$BGD_LOGS_DIR"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$status] $step" >> "$BGD_LOGS_DIR/${APP_NAME}-${deployment_id}.log"
 }
 
 # Run command conditionally in dry run mode
@@ -457,12 +496,12 @@ log_deployment_step() {
 #
 # Returns:
 #   Command exit code or 0 in dry run mode
-run_cmd() {
+bgd_run_cmd() {
   if [ "${DRY_RUN:-false}" = true ]; then
-    log_info "Would run: $*"
+    bgd_log_info "Would run: $*"
     return 0
   else
-    log_info "Running: $*"
+    bgd_log_info "Running: $*"
     "$@"
     return $?
   fi
@@ -478,8 +517,8 @@ run_cmd() {
 #   Hook exit code or 0 if hook not found
 #
 # Example:
-#   run_hook "pre_deploy" "v1.0" "blue"
-run_hook() {
+#   bgd_run_hook "pre_deploy" "v1.0" "blue"
+bgd_run_hook() {
   local hook_name="$1"
   shift
   
@@ -489,15 +528,15 @@ run_hook() {
   fi
   
   # Check if there are any plugin files
-  local plugin_count=$(find plugins -name "*.sh" -type f 2>/dev/null | wc -l)
+  local plugin_count=$(find plugins -name "bgd-*.sh" -type f 2>/dev/null | wc -l)
   if [ "$plugin_count" -eq 0 ]; then
     return 0
   fi
   
   # Run the hook if defined
-  if type "hook_${hook_name}" &>/dev/null; then
-    log_info "Running hook: $hook_name"
-    "hook_${hook_name}" "$@"
+  if type "bgd_hook_${hook_name}" &>/dev/null; then
+    bgd_log_info "Running hook: $hook_name"
+    "bgd_hook_${hook_name}" "$@"
     return $?
   fi
   

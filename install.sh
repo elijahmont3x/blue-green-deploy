@@ -34,19 +34,19 @@ mkdir -p "certs"
 # Define current script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Define only the essential files needed for production
-ESSENTIAL_SCRIPTS=(
-  "common.sh"
-  "deploy.sh"
-  "cutover.sh"
-  "rollback.sh"
-  "cleanup.sh"
-  "health-check.sh"
+# Define core scripts (namespaced implementation files)
+CORE_SCRIPTS=(
+  "bgd-core.sh"
+  "bgd-deploy.sh"
+  "bgd-cutover.sh"
+  "bgd-rollback.sh"
+  "bgd-cleanup.sh"
+  "bgd-health-check.sh"
 )
 
-# Copy scripts and ensure they're all executable
-echo "Installing essential deployment scripts..."
-for script in "${ESSENTIAL_SCRIPTS[@]}"; do
+# Copy core scripts and ensure they're all executable
+echo "Installing core implementation files..."
+for script in "${CORE_SCRIPTS[@]}"; do
   script_path="$SCRIPT_DIR/scripts/$script"
   
   if [ -f "$script_path" ]; then
@@ -80,15 +80,17 @@ for template in "${ESSENTIAL_TEMPLATES[@]}"; do
 done
 
 # Install plugins
+echo "Installing plugins..."
+
+# Find only namespaced plugins (bgd-*.sh)
 PLUGIN_DIR="$SCRIPT_DIR/plugins"
 if [ -d "$PLUGIN_DIR" ]; then
-  echo "Installing plugins..."
-  for plugin in "$PLUGIN_DIR"/*.sh; do
+  for plugin in "$PLUGIN_DIR"/bgd-*.sh; do
     if [ -f "$plugin" ]; then
       plugin_name=$(basename "$plugin")
       cp "$plugin" "plugins/"
       chmod +x "plugins/$plugin_name"
-      echo "  ✓ $plugin_name"
+      echo "  ✓ $plugin_name (plugin)"
     fi
   done
 else
@@ -99,8 +101,8 @@ fi
 echo
 echo "✅ Installation completed successfully!"
 echo "System is ready for deployment with:"
-echo "  ./scripts/deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
+echo "  ./scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
 echo
 echo "For multi-container deployment with shared services:"
-echo "  ./scripts/deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
+echo "  ./scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
 echo
