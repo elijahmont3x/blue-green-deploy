@@ -130,17 +130,18 @@ parse_parameters() {
       # Extract argument name without value
       local arg_name="${1%%=*}"
       arg_name="${arg_name#--}"
+      local arg_name_upper=$(echo "$arg_name" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
       
       # Check if it's a registered plugin argument
-      if [ -n "${REGISTERED_PLUGIN_ARGS[$arg_name]+x}" ]; then
+      if [ -n "${REGISTERED_PLUGIN_ARGS[$arg_name_upper]+x}" ]; then
         # It's a boolean flag (no value)
         if [[ "$1" == "--$arg_name" ]]; then
-          eval "$arg_name=true"
+          eval "$arg_name_upper=true"
           processed=1
         # It has a value
         elif [[ "$1" == "--$arg_name="* ]]; then
           local arg_value="${1#*=}"
-          eval "$arg_name=\"$arg_value\""
+          eval "$arg_name_upper=\"$arg_value\""
           processed=1
         fi
       fi

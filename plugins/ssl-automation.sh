@@ -7,6 +7,13 @@
 #
 # Place this file in the plugins/ directory to automatically activate it.
 
+# Register plugin arguments
+register_ssl_automation_arguments() {
+  register_plugin_argument "ssl-automation" "SSL_ENABLED" "false"
+  register_plugin_argument "ssl-automation" "CERTBOT_EMAIL" "admin@example.com"
+  register_plugin_argument "ssl-automation" "CERTBOT_STAGING" "false"
+}
+
 # Global variables
 CERTBOT_EMAIL=${CERTBOT_EMAIL:-"admin@example.com"}
 CERTBOT_STAGING=${CERTBOT_STAGING:-false}  # Set to true for testing
@@ -86,7 +93,7 @@ generate_certificates() {
   local staging_param=""
   if [ "$CERTBOT_STAGING" = true ]; then
     staging_param="--staging"
-    log_warning "Using Let's Encrypt staging server (certificates won't be trusted)"
+    log_warning "Using Let's Encrypt staging server \(certificates won't be trusted\)"
   fi
   
   # Starting nginx with special config for ACME challenge
