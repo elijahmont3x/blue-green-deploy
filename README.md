@@ -1,6 +1,6 @@
 # Blue/Green Deployment System
 
-A utility for implementing zero-downtime deployments using the blue/green deployment strategy. This toolkit enables continuous integration and deployment pipelines to maintain two identical environments, gradually shift traffic between them, and achieve seamless updates with no downtime.
+A comprehensive utility for implementing zero-downtime deployments using the blue/green deployment strategy. This toolkit enables continuous integration and deployment pipelines to maintain two identical environments, gradually shift traffic between them, and achieve seamless updates with no downtime.
 
 ## What Is This?
 
@@ -16,9 +16,17 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Service Name Configuration](#service-name-configuration)
 - [Command Reference](#command-reference)
 - [Plugin System](#plugin-system)
+  - [Database Migrations](#database-migrations)
+  - [Service Discovery](#service-discovery)
+  - [SSL Automation](#ssl-automation)
+  - [Audit Logging](#audit-logging)
+  - [Creating Custom Plugins](#creating-custom-plugins)
+- [Multi-Container Support](#multi-container-support)
+- [Domain-Based Routing](#domain-based-routing)
 - [Advanced Configuration](#advanced-configuration)
 - [Troubleshooting](#troubleshooting)
 - [Security Best Practices](#security-best-practices)
+- [Changelog](#changelog)
 
 ## Overview
 
@@ -40,6 +48,12 @@ Key features:
 - Automated health checks
 - Simple rollback process
 - Environment cleanup tools
+- Comprehensive plugin system
+- Multi-container and multi-domain support
+- Database migration handling with rollback capabilities
+- Service discovery and registry
+- SSL certificate automation with Let's Encrypt
+- Deployment event logging and monitoring
 
 ## How It Works
 
@@ -81,6 +95,50 @@ flowchart LR
     class D green
 ```
 
+### Multi-Container Infrastructure
+
+With the enhanced multi-container support, your infrastructure can now support both stateless (blue/green deployed) and stateful (shared) services:
+
+```mermaid
+flowchart TB
+    loadBalancer["`**Nginx**<br>Load Balancer`"]
+    
+    subgraph blue [" Blue Environment "]
+        blueApp["`**App**<br>Service`"]
+        blueFrontend["`**Frontend**<br>Service`"]
+    end
+    
+    subgraph green [" Green Environment "]
+        greenApp["`**App**<br>Service`"]
+        greenFrontend["`**Frontend**<br>Service`"]
+    end
+    
+    subgraph shared [" Shared Services "]
+        db["`**Database**<br>Stateful`"]
+        redis["`**Redis**<br>Stateful`"]
+    end
+    
+    loadBalancer --> blueApp
+    loadBalancer --> greenApp
+    loadBalancer --> blueFrontend
+    loadBalancer --> greenFrontend
+    
+    blueApp --> db
+    blueApp --> redis
+    greenApp --> db
+    greenApp --> redis
+    
+    classDef container fill:#f8f9fa,stroke:#343a40,stroke-width:2px,rx:5,ry:5
+    classDef blue fill:#cce5ff,stroke:#004085,stroke-width:2px,rx:5,ry:5
+    classDef green fill:#d4edda,stroke:#155724,stroke-width:2px,rx:5,ry:5
+    classDef shared fill:#ffe8cc,stroke:#995500,stroke-width:2px,rx:5,ry:5
+    
+    class loadBalancer container
+    class blueApp,blueFrontend blue
+    class greenApp,greenFrontend green
+    class db,redis shared
+```
+
 ### Deployment Flow Diagram
 
 The deployment process follows this flow:
@@ -98,23 +156,27 @@ flowchart TD
     %% Nodes
     A["`**Build & Push**<br>Docker Image`"] --> B["`**Deploy**<br>To Inactive Environment`"]
     B --> C{"`**Health Checks**<br>Application Ready?`"}
-    C -->|Pass| D["`**Traffic Shift**<br>10% to New Environment`"]
-    C -->|Fail| E["`**Abort**<br>Deployment Failed`"]
-    D --> F["`**Traffic Shift**<br>50% to New Environment`"]
-    F --> G["`**Traffic Shift**<br>90% to New Environment`"]
-    G --> H{"`**Verification**<br>All Systems Go?`"}
-    H -->|Yes| I["`**Cutover**<br>100% Traffic to New`"]
-    H -->|No| J["`**Rollback**<br>Revert to Original`"]
-    I --> K["`**Cleanup**<br>Stop Old Environment`"]
-    J --> L["`**Revert**<br>Shift Traffic Back`"]
+    C -->|Pass| D["`**Database Migrations**<br>Apply Schema Changes`"]
+    D --> E{"`**Migration Checks**<br>Database Updated?`"}
+    E -->|Pass| F["`**Traffic Shift**<br>10% to New Environment`"]
+    E -->|Fail| G["`**Rollback**<br>Database Changes`"]
+    G --> Z["`**Abort**<br>Deployment Failed`"]
+    C -->|Fail| Z
+    F --> H["`**Traffic Shift**<br>50% to New Environment`"]
+    H --> I["`**Traffic Shift**<br>90% to New Environment`"]
+    I --> J{"`**Verification**<br>All Systems Go?`"}
+    J -->|Yes| K["`**Cutover**<br>100% Traffic to New`"]
+    J -->|No| L["`**Rollback**<br>Revert to Original`"]
+    K --> M["`**Service Registration**<br>Update Service Registry`"]
+    M --> N["`**Cleanup**<br>Stop Old Environment`"]
+    L --> O["`**Revert**<br>Shift Traffic Back`"]
     
     %% Apply classes
     class A,B process
-    class C,H decision
-    class D,F,G primary
-    class E,J secondary
-    class I,K success
-    class L warning
+    class C,E,J decision
+    class D,F,H,I primary
+    class G,L,O,Z secondary
+    class K,M,N success
 ```
 
 ## Prerequisites
@@ -124,6 +186,11 @@ To use this toolkit, you need:
 - Docker and Docker Compose installed on your server
 - CI/CD platform with SSH access to your server (GitHub Actions, GitLab CI, etc.)
 - Server location for your deployments (e.g., `/app/your-project`)
+
+For advanced features like SSL automation:
+- DNS properly configured for your domain(s)
+- Access to port 80 and 443 for Let's Encrypt verification
+- Public IP address for your server
 
 ## Application Requirements
 
@@ -242,7 +309,7 @@ jobs:
       - name: Download deployment toolkit
         run: |
           mkdir -p deployment
-          curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz -o deployment/toolkit.tar.gz
+          curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v2.0.0.tar.gz -o deployment/toolkit.tar.gz
       
       # Copy deployment toolkit and configuration to server
       - name: Copy deployment toolkit to server
@@ -266,11 +333,20 @@ jobs:
           APP_CONFIG_VALUE: ${{ vars.APP_CONFIG_VALUE }}
           APP_SECRET_KEY: ${{ secrets.APP_SECRET_KEY }}
           APP_CORS_ORIGINS: ${{ vars.APP_CORS_ORIGINS }}
+          # SSL configuration
+          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          CERTBOT_EMAIL: ${{ vars.CERTBOT_EMAIL }}
+          SSL_ENABLED: ${{ vars.SSL_ENABLED || 'true' }}
+          # Database configuration
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_SHADOW_ENABLED: ${{ vars.DB_SHADOW_ENABLED || 'true' }}
+          # Service discovery
+          SERVICE_REGISTRY_ENABLED: ${{ vars.SERVICE_REGISTRY_ENABLED || 'true' }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS
+          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS,DOMAIN_NAME,CERTBOT_EMAIL,SSL_ENABLED,DATABASE_URL,DB_SHADOW_ENABLED,SERVICE_REGISTRY_ENABLED
           script: |
             cd /app/myapp
             
@@ -290,6 +366,14 @@ jobs:
             export APP_SECRET_KEY="$APP_SECRET_KEY"
             export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
             
+            # Export plugin-specific environment variables
+            export DOMAIN_NAME="$DOMAIN_NAME"
+            export CERTBOT_EMAIL="$CERTBOT_EMAIL"
+            export SSL_ENABLED="$SSL_ENABLED"
+            export DATABASE_URL="$DATABASE_URL"
+            export DB_SHADOW_ENABLED="$DB_SHADOW_ENABLED"
+            export SERVICE_REGISTRY_ENABLED="$SERVICE_REGISTRY_ENABLED"
+            
             # Clean up failed deployments
             ./scripts/cleanup.sh --app-name=myapp --failed-only
             
@@ -298,9 +382,11 @@ jobs:
               --app-name=myapp \
               --image-repo=$IMAGE_REPO \
               --nginx-port=80 \
+              --nginx-ssl-port=443 \
               --blue-port=8081 \
               --green-port=8082 \
-              --health-endpoint=/health
+              --health-endpoint=/health \
+              --setup-shared
   
   cleanup:
     if: github.event_name == 'schedule'
@@ -326,11 +412,17 @@ The blue/green deployment system uses command-line parameters for configuration:
   --app-name=myapp \
   --image-repo=ghcr.io/myusername/myproject \
   --nginx-port=80 \
+  --nginx-ssl-port=443 \
   --blue-port=8081 \
   --green-port=8082 \
   --health-endpoint=/health \
   --database-url="postgresql://user:pass@host/db" \
-  --api-key="your-api-key"
+  --api-key="your-api-key" \
+  --domain-name="example.com" \
+  --ssl-enabled=true \
+  --certbot-email="admin@example.com" \
+  --db-shadow-enabled=true \
+  --service-registry-enabled=true
 ```
 
 Benefits of this approach:
@@ -346,7 +438,8 @@ Environment variables are automatically captured and propagated to your blue/gre
 1. **Explicit parameters**: Variables passed as command-line parameters (like `--database-url`) take highest precedence
 2. **Exported variables**: Any variables exported before running the deployment script are captured
 3. **System-defined patterns**: Variables matching patterns like `DB_*` or `APP_*` are automatically included
-4. **CI/CD variables**: Variables passed via the `env:` section in your CI/CD workflow propagate properly
+4. **Plugin-defined variables**: Variables registered by plugins (like `SSL_*` or `SERVICE_*`) are included
+5. **CI/CD variables**: Variables passed via the `env:` section in your CI/CD workflow propagate properly
 
 ## Supporting Multiple Applications
 
@@ -366,7 +459,7 @@ For organizations with multiple applications, you can set up multiple deployment
       # Extract toolkit if not already installed
       if [ ! -f "./scripts/deploy.sh" ]; then
         mkdir -p toolkit && cd toolkit
-        curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v1.0.0.tar.gz | tar xz --strip-components=1
+        curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v2.0.0.tar.gz | tar xz --strip-components=1
         chmod +x ./install.sh
         ./install.sh backend
         cd ..
@@ -402,23 +495,45 @@ By default, the deployment system assumes your main application service is named
 
 ### Example docker-compose.yml
 
-Here's a generic docker-compose.yml example that works with the default configuration:
+Here's a sample docker-compose.yml with multi-container support that works with the default configuration:
 
 ```yaml
 version: '3.8'
 name: ${APP_NAME:-myapp}
 
+# Define networks that can be shared across environments
 networks:
-  app-network:
+  # This network is shared between blue/green environments
+  shared-network:
+    name: ${APP_NAME}-shared-network
+    external: ${SHARED_NETWORK_EXISTS:-false}
+  # This network is environment-specific
+  env-network:
+    name: ${APP_NAME}-${ENV_NAME}-network
     driver: bridge
 
+# Define volumes that persist between deployments
+volumes:
+  db-data:
+    name: ${APP_NAME}-db-data
+    external: ${DB_DATA_EXISTS:-false}
+  redis-data:
+    name: ${APP_NAME}-redis-data
+    external: ${REDIS_DATA_EXISTS:-false}
+
 services:
+  # Blue/Green deployable services (stateless)
+  # ==================================
+  
+  # Main application service - will be blue/green deployed
   app:  # This is the main service name the system expects by default
-    image: ${IMAGE_REPO:-yourusername/myapp}:${VERSION:-latest}
+    image: ${IMAGE_REPO:-ghcr.io/example/myapp}:${VERSION:-latest}
     restart: unless-stopped
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - ENV_NAME=${ENV_NAME:-default}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@db:5432/myapp}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     ports:
       - '${PORT:-3000}:3000'
     healthcheck:
@@ -427,19 +542,96 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - app-network
+      - env-network
+      - shared-network
+    depends_on:
+      - db
+      - redis
+    labels:
+      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
 
+  # Frontend service - will also be blue/green deployed
+  frontend:
+    image: ${FRONTEND_IMAGE_REPO:-ghcr.io/example/frontend}:${FRONTEND_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - ENV_NAME=${ENV_NAME:-default}
+      - API_URL=${API_URL:-http://app:3000}
+    ports:
+      - '${FRONTEND_PORT:-8080}:80'
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:80/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - env-network
+      - shared-network
+    labels:
+      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
+
+  # Shared/persistent services (stateful)
+  # =============================
+  
+  # Database service - shared between blue/green environments
+  db:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-myapp}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-network
+    labels:
+      - "bgd.role=persistent"  # Marks service as shared between environments
+    profiles:
+      - shared  # Only starts when explicitly included
+
+  # Redis service - shared between blue/green environments
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shared-network
+    labels:
+      - "bgd.role=persistent"  # Marks service as shared between environments
+    profiles:
+      - shared  # Only starts when explicitly included
+
+  # Reverse proxy/load balancer
   nginx:
     image: nginx:stable-alpine
     restart: unless-stopped
     ports:
       - '${NGINX_PORT:-80}:80'
+      - '${NGINX_SSL_PORT:-443}:443'
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - env-network
+      - shared-network
     depends_on:
       - app
-    networks:
-      - app-network
+      - frontend
+    labels:
+      - "bgd.role=proxy"  # Marks service as the proxy
 ```
 
 ### Customizing Service Names
@@ -466,6 +658,7 @@ If your main service has a different name (e.g., "web", "api", or "frontend"), i
         # Update Nginx templates to use different service name
         sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-single-env.conf.template
         sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-dual-env.conf.template
+        sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-multi-domain.conf.template
         
         # Update docker-compose override template
         sed -i 's/^  app:/  web:/g' config/templates/docker-compose.override.template
@@ -482,6 +675,7 @@ If your application runs on a port other than 3000:
    ```bash
    sed -i 's/:3000/:8000/g' config/templates/nginx-single-env.conf.template
    sed -i 's/:3000/:8000/g' config/templates/nginx-dual-env.conf.template
+   sed -i 's/:3000/:8000/g' config/templates/nginx-multi-domain.conf.template
    ```
 
 2. Update your docker-compose.yml to expose the correct port:
@@ -502,19 +696,31 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ./scripts/deploy.sh VERSION [OPTIONS]
 
 # Options:
-#   --app-name=NAME       Application name
-#   --image-repo=REPO     Docker image repository
-#   --nginx-port=PORT     Nginx external port
-#   --blue-port=PORT      Blue environment port
-#   --green-port=PORT     Green environment port
-#   --database-url=URL    Database connection string
-#   --api-key=KEY         API key
-#   --force               Force deployment even if target environment is active
-#   --no-shift            Don't shift traffic automatically (manual cutover)
+#   --app-name=NAME           Application name
+#   --image-repo=REPO         Docker image repository
+#   --frontend-image-repo=REPO Frontend image repository
+#   --frontend-version=VER    Frontend version (defaults to same as backend VERSION)
+#   --domain-name=DOMAIN      Domain name for multi-domain routing
+#   --nginx-port=PORT         Nginx HTTP port (default: 80)
+#   --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
+#   --blue-port=PORT          Blue environment port (default: 8081)
+#   --green-port=PORT         Green environment port (default: 8082)
+#   --health-endpoint=PATH    Health check endpoint (default: /health)
+#   --health-retries=N        Number of health check retries (default: 12)
+#   --health-delay=SEC        Delay between health checks (default: 5)
+#   --timeout=SEC             Timeout for each request (default: 5)
+#   --database-url=URL        Database connection string
+#   --redis-url=URL           Redis connection string
+#   --api-key=KEY             API key
+#   --setup-shared            Initialize shared services (first deployment)
+#   --skip-migrations         Skip database migrations
+#   --migrations-cmd=CMD      Custom migrations command (default: npm run migrate)
+#   --force                   Force deployment even if target environment is active
+#   --no-shift                Don't shift traffic automatically (manual cutover)
 
 # Examples:
 ./scripts/deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
-./scripts/deploy.sh v1.1 --app-name=myapp --no-shift
+./scripts/deploy.sh v1.1 --app-name=myapp --domain-name=example.com --setup-shared
 ```
 
 ### Cutover
@@ -524,10 +730,18 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 
 # Options:
 #   --app-name=NAME       Application name
+#   --domain-name=DOMAIN  Domain name for multi-domain routing
 #   --keep-old            Don't stop the previous environment
+#   --nginx-port=PORT     Nginx external port
+#   --nginx-ssl-port=PORT Nginx HTTPS port
+#   --blue-port=PORT      Blue environment port
+#   --green-port=PORT     Green environment port
+#   --health-endpoint=PATH Health check endpoint
+#   --health-retries=N    Number of health check retries
+#   --health-delay=SEC    Delay between health checks
 
 # Example:
-./scripts/cutover.sh green --app-name=myapp
+./scripts/cutover.sh green --app-name=myapp --domain-name=example.com
 ```
 
 ### Rollback
@@ -538,6 +752,12 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 # Options:
 #   --app-name=NAME       Application name
 #   --force               Force rollback even if previous environment is unhealthy
+#   --nginx-port=PORT     Nginx external port
+#   --blue-port=PORT      Blue environment port
+#   --green-port=PORT     Green environment port
+#   --health-endpoint=PATH Health check endpoint
+#   --health-retries=N    Number of health check retries
+#   --health-delay=SEC    Delay between health checks
 
 # Example:
 ./scripts/rollback.sh --app-name=myapp
@@ -559,9 +779,27 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ./scripts/cleanup.sh --app-name=myapp --failed-only
 ```
 
+### Health Check
+
+```bash
+./scripts/health-check.sh [ENDPOINT] [OPTIONS]
+
+# Arguments:
+#   ENDPOINT              URL to check (default: http://localhost:3000/health)
+
+# Options:
+#   --app-name=NAME       Application name
+#   --retries=N           Number of health check retries (default: 5)
+#   --delay=SEC           Delay between health checks (default: 10)
+#   --timeout=SEC         Timeout for each request (default: 5)
+
+# Example:
+./scripts/health-check.sh http://localhost:8081/health --retries=10 --delay=5
+```
+
 ## Plugin System
 
-The plugin system allows you to extend the deployment process with custom hooks. Plugins are shell scripts that your CI/CD pipeline can place in the `plugins/` directory of your deployment environment.
+The enhanced plugin system allows you to extend the deployment process with custom hooks and functionality. Plugins are shell scripts that your CI/CD pipeline can place in the `plugins/` directory of your deployment environment.
 
 ### Available Hooks
 
@@ -571,136 +809,231 @@ The plugin system allows you to extend the deployment process with custom hooks.
 - `hook_post_cutover`: Runs after traffic cutover
 - `hook_pre_rollback`: Runs before rollback
 - `hook_post_rollback`: Runs after rollback
+- `hook_post_health`: Runs after health checks pass
+- `hook_cleanup`: Runs during cleanup operations
 
-### Implementing Plugins Through CI/CD
+### Plugin Registration System
 
-You can include plugin functionality directly in your CI/CD pipeline:
+Plugins can register custom arguments that will be automatically accepted by the deployment scripts:
 
-```yaml
-# In your GitHub Actions workflow
-- name: Deploy with Slack notifications
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/myapp
-      
-      # Create Slack notifications plugin
-      mkdir -p plugins
-      cat > plugins/slack-notifications.sh << 'EOL'
-      #!/bin/bash
-      
-      hook_post_deploy() {
-        local version="$1"
-        local env_name="$2"
-        
-        curl -s -X POST \
-          -H "Content-Type: application/json" \
-          -d "{\"text\":\"🚀 *Deployment Successful*\n• Application: ${APP_NAME}\n• Version: ${version}\n• Environment: ${env_name}\"}" \
-          "${SLACK_WEBHOOK}"
-          
-        return $?
-      }
-      EOL
-      
-      chmod +x plugins/slack-notifications.sh
-      
-      # Run deployment with Slack webhook
-      ./scripts/deploy.sh "$VERSION" \
-        --app-name=myapp \
-        --image-repo=$IMAGE_REPO \
-        --slack-webhook="${{ secrets.SLACK_WEBHOOK }}"
+```bash
+# In your plugin file
+register_plugin_argument "plugin-name" "ARG_NAME" "default-value"
 ```
 
-### Plugin Examples
+These arguments can then be passed to the deployment script:
 
-#### Slack Notifications
+```bash
+./scripts/deploy.sh v1.0 --app-name=myapp --arg-name=custom-value
+```
+
+### Database Migrations
+
+The database migrations plugin (`db-migrations.sh`) provides advanced database migration capabilities:
+
+- Schema and full database backups
+- Migration history tracking
+- Rollback capabilities
+- Shadow database approach for zero-downtime migrations
+
+#### Configuration
+
+```bash
+# Enable database migrations with shadow database
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --database-url="postgresql://user:pass@host/db" \
+  --db-shadow-enabled=true \
+  --db-shadow-suffix="_shadow" \
+  --skip-migrations=false \
+  --migrations-cmd="npm run migrate"
+```
+
+#### Zero-Downtime Migration Process
+
+1. The plugin creates a shadow database (copy of production database)
+2. Migrations are applied to the shadow database
+3. The shadow database is validated
+4. The main and shadow databases are swapped (renamed)
+5. The application continues running with the updated schema
+
+This approach ensures zero-downtime during schema changes, as the application only ever sees a fully migrated database.
+
+### Service Discovery
+
+The service discovery plugin (`service-discovery.sh`) enables automatic service registration and discovery:
+
+- Registers services with internal and/or external registries
+- Generates service URLs for environment variables
+- Updates Nginx configuration for discovered services
+
+#### Configuration
+
+```bash
+# Enable service discovery
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --service-registry-enabled=true \
+  --service-registry-url="http://registry:8080" \
+  --service-auto-generate-urls=true
+```
+
+#### Service Discovery Process
+
+1. After a successful deployment, services are registered in a local registry file
+2. If configured, services are also registered with an external registry
+3. Service URLs are generated and added to environment variables
+4. Nginx configuration is updated to include discovered services
+
+### SSL Automation
+
+The SSL automation plugin (`ssl-automation.sh`) handles SSL certificate management with Let's Encrypt:
+
+- Automatic certificate generation and renewal
+- ACME challenge configuration
+- Nginx SSL configuration
+
+#### Configuration
+
+```bash
+# Enable SSL automation
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --domain-name="example.com" \
+  --certbot-email="admin@example.com" \
+  --ssl-enabled=true \
+  --certbot-staging=false
+```
+
+#### SSL Automation Process
+
+1. Before deployment, the plugin checks if SSL certificates exist
+2. If not, it configures Nginx for ACME challenges
+3. Certbot is used to obtain certificates from Let's Encrypt
+4. Certificates are installed and Nginx is configured to use them
+5. A renewal script and cron job are set up for automatic renewals
+
+### Audit Logging
+
+The audit logging plugin (`audit-logging.sh`) provides comprehensive deployment event tracking:
+
+- Records deployment events with timestamps
+- Captures environment details
+- Integrates with external monitoring systems
+- Provides deployment notifications
+
+#### Configuration
+
+```bash
+# Enable audit logging with Slack notifications
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
+  --audit-log-level="info"
+```
+
+### Creating Custom Plugins
+
+You can create your own plugins to extend the functionality of the deployment system:
+
+1. Create a shell script in the `plugins/` directory
+2. Implement the necessary hooks
+3. Register any custom arguments
+4. Include the plugin in your CI/CD pipeline
+
+Example custom plugin:
 
 ```bash
 #!/bin/bash
-# plugins/slack-notifications.sh
+# plugins/custom-notification.sh
 
+# Register plugin arguments
+register_plugin_argument "custom-notification" "NOTIFY_EMAIL" ""
+register_plugin_argument "custom-notification" "NOTIFY_SMS" ""
+
+# Implement hooks
 hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
-  if [ -z "${SLACK_WEBHOOK:-}" ]; then
-    log_info "Skipping Slack notification (SLACK_WEBHOOK not set)"
-    return 0
+  if [ -n "${NOTIFY_EMAIL:-}" ]; then
+    log_info "Sending deployment notification email to $NOTIFY_EMAIL"
+    # Email sending logic here
   fi
   
-  log_info "Sending deployment notification to Slack"
+  if [ -n "${NOTIFY_SMS:-}" ]; then
+    log_info "Sending deployment notification SMS to $NOTIFY_SMS"
+    # SMS sending logic here
+  fi
   
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"text\":\"🚀 *Deployment Successful*\n• Application: ${APP_NAME}\n• Version: ${version}\n• Environment: ${env_name}\"}" \
-    "${SLACK_WEBHOOK}"
-    
-  return $?
+  return 0
 }
 
 hook_post_rollback() {
   local rollback_env="$1"
   
-  if [ -z "${SLACK_WEBHOOK:-}" ]; then
-    return 0
-  fi
-  
-  log_info "Sending rollback notification to Slack"
-  
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"text\":\"⚠️ *Rollback Performed*\n• Application: ${APP_NAME}\n• Environment: ${rollback_env}\"}" \
-    "${SLACK_WEBHOOK}"
-    
-  return $?
-}
-```
-
-#### Database Backup
-
-```bash
-#!/bin/bash
-# plugins/db-backup.sh
-
-hook_pre_deploy() {
-  local version="$1"
-  
-  if [ -z "${DATABASE_URL:-}" ]; then
-    log_info "Skipping database backup (DATABASE_URL not set)"
-    return 0
-  fi
-  
-  # Extract DB info from connection string
-  local db_name=$(echo "$DATABASE_URL" | sed -n 's/.*\/\([^?]*\).*/\1/p')
-  
-  if [ -z "$db_name" ]; then
-    log_warning "Could not extract database name from DATABASE_URL"
-    return 0
-  fi
-  
-  log_info "Creating database backup before deployment"
-  
-  # Create backup directory
-  ensure_directory "backups"
-  
-  # Generate backup filename with timestamp
-  local backup_file="backups/${APP_NAME}-${db_name}-$(date +%Y%m%d-%H%M%S).sql"
-  
-  # Run backup
-  docker-compose exec -T postgres pg_dump -U "${DB_USER:-postgres}" "${db_name}" > "${backup_file}"
-  
-  if [ $? -eq 0 ]; then
-    log_success "Database backup created: ${backup_file}"
-  else
-    log_warning "Database backup failed"
+  if [ -n "${NOTIFY_EMAIL:-}" ]; then
+    log_info "Sending rollback notification email to $NOTIFY_EMAIL"
+    # Email sending logic here
   fi
   
   return 0
 }
 ```
+
+## Multi-Container Support
+
+The enhanced system now supports deploying multiple containers as part of a single blue/green deployment:
+
+- Deploy both backend and frontend applications
+- Share stateful services (database, cache) between environments
+- Configure network and volume management
+
+### Stateless vs Stateful Services
+
+The system distinguishes between two types of services:
+
+- **Stateless services** (marked with `bgd.role=deployable`): These services are deployed in both blue and green environments and can be swapped without data loss
+- **Stateful services** (marked with `bgd.role=persistent`): These services are shared between environments and persist data between deployments
+
+### Shared Services Setup
+
+To set up shared services during initial deployment:
+
+```bash
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --setup-shared \
+  --domain-name=example.com
+```
+
+This will:
+1. Create shared Docker networks
+2. Create persistent volumes for stateful services
+3. Start shared services with the appropriate profiles
+
+## Domain-Based Routing
+
+The system supports routing traffic to different services based on domains:
+
+- Configure multiple domains and subdomains
+- Direct traffic to different services based on domain
+- Support for SSL certificates for all domains
+
+### Domain Configuration
+
+```bash
+# Configure domain-based routing
+./scripts/deploy.sh v1.0 \
+  --app-name=myapp \
+  --domain-name="example.com" \
+  --ssl-enabled=true
+```
+
+This will generate an Nginx configuration that routes traffic based on domains:
+- `example.com` and `www.example.com` -> Main application
+- `api.example.com` -> API service
+- `team.example.com` -> Frontend application
 
 ## Advanced Configuration
 
@@ -728,7 +1061,7 @@ For advanced Nginx configuration (SSL, custom routing, etc.), include template m
 
 ```yaml
 # In your GitHub Actions workflow
-- name: Deploy with SSL configuration
+- name: Deploy with custom Nginx configuration
   uses: appleboy/ssh-action@master
   with:
     host: ${{ secrets.SERVER_HOST }}
@@ -737,46 +1070,16 @@ For advanced Nginx configuration (SSL, custom routing, etc.), include template m
     script: |
       cd /app/myapp
       
-      # Update Nginx template with SSL configuration
+      # Update Nginx template with custom configuration
       cat > config/templates/nginx-single-env.conf.template << 'EOL'
+      # Custom Nginx configuration with specialized routing
       worker_processes auto;
       events {
           worker_connections 1024;
       }
       
       http {
-          include       /etc/nginx/mime.types;
-          default_type  application/octet-stream;
-          
-          sendfile        on;
-          keepalive_timeout  65;
-          
-          upstream backend {
-              server APP_NAME-ENVIRONMENT-app-1:3000;
-          }
-      
-          # Redirect HTTP to HTTPS
-          server {
-              listen NGINX_PORT;
-              server_name myapp.example.com;
-              return 301 https://$host$request_uri;
-          }
-          
-          # HTTPS configuration
-          server {
-              listen 443 ssl;
-              server_name myapp.example.com;
-              
-              ssl_certificate /etc/nginx/certs/fullchain.pem;
-              ssl_certificate_key /etc/nginx/certs/privkey.pem;
-              ssl_protocols TLSv1.2 TLSv1.3;
-              
-              location / {
-                  proxy_pass http://backend;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-              }
-          }
+          # Custom configuration here
       }
       EOL
       
@@ -794,6 +1097,9 @@ For advanced Nginx configuration (SSL, custom routing, etc.), include template m
 | Health check failing | Check application logs in the CI/CD output |
 | Environment variables not being passed | Verify they're correctly defined in the CI/CD platform |
 | Service name mismatches | Ensure the service name in templates matches your docker-compose.yml |
+| Database migration failures | Check database credentials and migration script |
+| SSL certificate generation fails | Verify domain DNS configuration and firewall settings |
+| Shared services not starting | Check volume permissions and network configuration |
 
 ### Including Diagnostic Steps in Pipelines
 
@@ -822,6 +1128,18 @@ Add these diagnostic steps to your CI/CD workflow when troubleshooting:
       echo "Deployment logs:"
       ls -la logs/
       cat logs/myapp-*.log | tail -n 50
+      
+      # Check plugin status
+      echo "Plugin status:"
+      ls -la plugins/
+      
+      # Check service registry
+      echo "Service registry:"
+      cat service-registry.json || echo "No service registry"
+      
+      # Check SSL certificates
+      echo "SSL certificates:"
+      ls -la certs/
 ```
 
 ### Rollback Plans
@@ -893,3 +1211,5 @@ Follow these security best practices in your CI/CD pipelines:
 3. **Use read-only tokens**: When pulling from Docker registries, use read-only tokens where possible
 4. **Scan images**: Include container security scanning in your pipeline
 5. **Validate deployments**: Always run health checks after deployment to verify success
+6. **Secure plugin arguments**: Use CI/CD secrets for sensitive plugin arguments
+7. **Rotate credentials**: Regularly rotate API keys, database passwords, and other credentials
