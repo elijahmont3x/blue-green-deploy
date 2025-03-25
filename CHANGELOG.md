@@ -38,10 +38,14 @@
   - Automatic Nginx configuration updates
   - Inter-service communication management
 
-- **SSL Automation**: Seamless SSL certificate handling
-  - Let's Encrypt integration
-  - Automatic certificate renewal
+- **SSL Automation**: Completely rebuilt SSL certificate handling
+  - DNS-based verification replaces HTTP verification 
+  - Multiple DNS provider support (GoDaddy, Namecheap) with easy extensibility
+  - Automatic detection and reconfiguration of existing certificates
+  - Let's Encrypt integration with improved reliability
+  - Automatic certificate renewal with proper credentials management
   - Multi-domain certificate support
+  - Seamless CI/CD integration with secure API key handling
   - ACME challenge configuration
 
 - **Audit Logging**: Comprehensive deployment tracking
@@ -101,11 +105,14 @@
   - Nginx configuration updates
   - External registry integration
 
-- **ssl-automation.sh**: SSL certificate management
-  - Let's Encrypt integration
-  - Certificate renewal automation
+- **ssl-automation.sh**: Completely redesigned SSL management
+  - DNS-based verification for more reliable certificate issuance
+  - Support for multiple DNS providers (GoDaddy, Namecheap)
+  - Automatic detection and reconfiguration of existing certificates
+  - Enhanced renewal management
+  - API-based automation for CI/CD environments
   - Multi-domain support
-  - Nginx SSL configuration
+  - Improved error handling and recovery
 
 - **audit-logging.sh**: Deployment tracking
   - Structured event logging
@@ -131,6 +138,7 @@
 - Fixed race conditions in traffic shifting
 - Improved cleanup of orphaned containers
 - Enhanced SSL certificate validation
+- Fixed "chicken-and-egg" problem with SSL verification requiring a running webserver
 
 ### Breaking Changes
 
@@ -138,3 +146,4 @@
 - Default service name expected in docker-compose.yml is now `app`
 - Stateful services must be marked with `bgd.role=persistent` label
 - SSL certificate directory structure has changed
+- SSL automation now requires DNS provider API credentials for fully automated operation

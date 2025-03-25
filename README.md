@@ -886,33 +886,279 @@ The service discovery plugin (`bgd-service-discovery.sh`) enables automatic serv
 3. Service URLs are generated and added to environment variables
 4. Nginx configuration is updated to include discovered services
 
+# Updated CHANGELOG.md
+
+```markdown
+# Changelog
+
+## v2.0.0 (2025-03-23)
+
+### Major Enhancements
+
+- **Namespace Management**: Complete refactoring to use proper namespacing
+  - All internal functions prefixed with `bgd_` to avoid conflicts
+  - All core files prefixed with `bgd-` (e.g., `bgd-core.sh`)
+  - **Removed backward compatibility wrapper scripts**
+  - Plugin system namespacing for extensibility
+
+- **Plugin System**: Complete overhaul of the plugin architecture with argument registration
+  - New hook system for extending deployment process
+  - Plugin argument registration mechanism
+  - Automatic environment variable propagation for plugins
+
+- **Multi-Container Support**: Enhanced architecture for complex applications
+  - Support for deploying multiple containers per environment
+  - Separation of stateless and stateful services
+  - Shared network and volume management
+  - Improved docker-compose template handling
+
+- **Domain-Based Routing**: Advanced traffic routing capabilities
+  - Support for multiple domains and subdomains
+  - Domain-specific service routing
+  - Integrated SSL certificates for all domains
+
+- **Database Migration Strategies**: Zero-downtime database handling
+  - Shadow database approach for zero-downtime migrations
+  - Comprehensive backup and restore capabilities
+  - Migration history tracking
+  - Framework-specific migration adapters
+
+- **Service Discovery**: Automatic service registration
+  - Local and external service registry integration
+  - Dynamic service URL generation
+  - Automatic Nginx configuration updates
+  - Inter-service communication management
+
+- **SSL Automation**: Completely rebuilt SSL certificate handling
+  - DNS-based verification replaces HTTP verification 
+  - Multiple DNS provider support (GoDaddy, Namecheap) with easy extensibility
+  - Automatic detection and reconfiguration of existing certificates
+  - Let's Encrypt integration with improved reliability
+  - Automatic certificate renewal with proper credentials management
+  - Multi-domain certificate support
+  - Seamless CI/CD integration with secure API key handling
+  - ACME challenge configuration
+
+- **Audit Logging**: Comprehensive deployment tracking
+  - Structured logging with timestamps
+  - Integration with monitoring systems
+  - Customizable notification options
+  - Deployment history tracking
+
+### New Scripts
+
+- **health-check.sh**: Standalone utility for checking service health
+  - Flexible endpoint verification
+  - Custom retry and delay settings
+  - Enhanced output and error handling
+
+### Enhanced Scripts
+
+- **common.sh**: Core utilities and plugin management
+  - Added plugin registration system
+  - Improved parameter parsing
+  - Enhanced environment variable handling
+  - Expanded helper functions
+
+- **deploy.sh**: Primary deployment workflow
+  - Support for multi-container deployments
+  - Integration with all plugins
+  - Improved error handling
+  - Enhanced traffic shifting
+
+- **cutover.sh**: Traffic transition management
+  - Support for keeping old environments
+  - Health verification before cutover
+  - Multi-domain support
+
+- **rollback.sh**: Recovery and rollback capabilities
+  - Enhanced database rollback
+  - Improved service restoration
+  - Plugin integration for notifications
+
+- **cleanup.sh**: Deployment cleanup utilities
+  - More flexible cleanup options
+  - Better docker resource management
+  - Improved cleanup reporting
+
+### New Plugins
+
+- **db-migrations.sh**: Database migration management
+  - Schema and full database backups
+  - Migration history tracking
+  - Shadow database zero-downtime migrations
+  - Framework-specific adapters
+  - Rollback capabilities
+
+- **service-discovery.sh**: Service registration
+  - Automatic service registration
+  - Service URL generation
+  - Nginx configuration updates
+  - External registry integration
+
+- **ssl-automation.sh**: Completely redesigned SSL management
+  - DNS-based verification for more reliable certificate issuance
+  - Support for multiple DNS providers (GoDaddy, Namecheap)
+  - Automatic detection and reconfiguration of existing certificates
+  - Enhanced renewal management
+  - API-based automation for CI/CD environments
+  - Multi-domain support
+  - Improved error handling and recovery
+
+- **audit-logging.sh**: Deployment tracking
+  - Structured event logging
+  - Monitoring system integration
+  - Notification capabilities
+  - History tracking
+
+### Documentation
+
+- Complete overhaul of the README.md
+- Added comprehensive plugin documentation
+- Added multi-container configuration examples
+- Added domain-based routing examples
+- Added troubleshooting guides
+- Enhanced security documentation
+- New usage examples for all features
+
+### Bugfixes
+
+- Fixed issue with environment variable propagation
+- Improved handling of failed health checks
+- Enhanced error recovery during deployments
+- Fixed race conditions in traffic shifting
+- Improved cleanup of orphaned containers
+- Enhanced SSL certificate validation
+- Fixed "chicken-and-egg" problem with SSL verification requiring a running webserver
+
+### Breaking Changes
+
+- Plugin system now requires explicit registration of custom arguments
+- Default service name expected in docker-compose.yml is now `app`
+- Stateful services must be marked with `bgd.role=persistent` label
+- SSL certificate directory structure has changed
+- SSL automation now requires DNS provider API credentials for fully automated operation
+```
+
 ### SSL Automation
 
 The SSL automation plugin (`bgd-ssl.sh`) handles SSL certificate management with Let's Encrypt:
 
+- DNS-based verification for reliable certificate issuance (solves the "chicken-and-egg" problem)
+- Multiple DNS provider support (GoDaddy, Namecheap)
 - Automatic certificate generation and renewal
-- ACME challenge configuration
 - Nginx SSL configuration
 
 #### Configuration
 
 ```bash
-# Enable SSL automation
+# Enable SSL automation with GoDaddy DNS verification
 ./scripts/bgd-deploy.sh v1.0 \
   --app-name=myapp \
   --domain-name="example.com" \
   --certbot-email="admin@example.com" \
   --ssl-enabled=true \
-  --certbot-staging=false
+  --certbot-staging=false \
+  --godaddy-api-key="YOUR_API_KEY" \
+  --godaddy-api-secret="YOUR_API_SECRET"
+
+# Or use Namecheap as the DNS provider
+./scripts/bgd-deploy.sh v1.0 \
+  --app-name=myapp \
+  --domain-name="example.com" \
+  --certbot-email="admin@example.com" \
+  --ssl-enabled=true \
+  --namecheap-api-key="YOUR_API_KEY" \
+  --namecheap-api-user="YOUR_API_USER" \
+  --namecheap-username="YOUR_USERNAME"
 ```
+
+#### DNS Provider Setup
+
+To use DNS verification, you'll need API credentials for your DNS provider:
+
+**GoDaddy:**
+1. Create an API key at https://developer.godaddy.com/
+2. Store the API key and secret in your CI/CD secrets
+3. Pass `--godaddy-api-key` and `--godaddy-api-secret` parameters
+
+**Namecheap:**
+1. Enable API access in your Namecheap account
+2. Get your API key from the profile page
+3. Store the credentials in your CI/CD secrets
+4. Pass `--namecheap-api-key`, `--namecheap-api-user`, and `--namecheap-username` parameters
 
 #### SSL Automation Process
 
-1. Before deployment, the plugin checks if SSL certificates exist
-2. If not, it configures Nginx for ACME challenges
-3. Certbot is used to obtain certificates from Let's Encrypt
-4. Certificates are installed and Nginx is configured to use them
-5. A renewal script and cron job are set up for automatic renewals
+1. The plugin detects your DNS provider based on provided credentials
+2. It checks if SSL certificates already exist
+3. For existing certificates, it automatically reconfigures them to use DNS verification
+4. For new certificates, it creates DNS TXT records via the provider's API
+5. Certbot is used to obtain certificates from Let's Encrypt
+6. Certificates are installed and Nginx is configured to use them
+7. A renewal script and cron job are set up for automatic renewals
+
+#### CI/CD Integration
+
+For CI/CD pipelines, store your DNS provider API credentials as secrets:
+
+```yaml
+# GitHub Actions example
+- name: Deploy with SSL automation
+  uses: appleboy/ssh-action@master
+  env:
+    # SSL credentials
+    GODADDY_API_KEY: ${{ secrets.GODADDY_API_KEY }}
+    GODADDY_API_SECRET: ${{ secrets.GODADDY_API_SECRET }}
+    CERTBOT_EMAIL: ${{ vars.CERTBOT_EMAIL }}
+  with:
+    host: ${{ secrets.SERVER_HOST }}
+    username: ${{ secrets.SERVER_USER }}
+    key: ${{ secrets.SSH_PRIVATE_KEY }}
+    envs: GODADDY_API_KEY,GODADDY_API_SECRET,CERTBOT_EMAIL
+    script: |
+      ./scripts/bgd-deploy.sh "$VERSION" \
+        --app-name=myapp \
+        --domain-name="example.com" \
+        --certbot-email="$CERTBOT_EMAIL" \
+        --godaddy-api-key="$GODADDY_API_KEY" \
+        --godaddy-api-secret="$GODADDY_API_SECRET"
+```
+
+#### Manual Certificate Setup (If Needed)
+
+If you prefer to set up certificates manually first:
+
+```bash
+# SSH into your server
+ssh your-user@your-server
+
+# Install GoDaddy plugin
+sudo pip3 install certbot-dns-godaddy
+
+# Create GoDaddy credentials file
+sudo mkdir -p /etc/letsencrypt/godaddy
+sudo bash -c 'cat > /etc/letsencrypt/godaddy/credentials.ini << EOF
+dns_godaddy_key = YOUR_GODADDY_API_KEY
+dns_godaddy_secret = YOUR_GODADDY_API_SECRET
+EOF'
+sudo chmod 600 /etc/letsencrypt/godaddy/credentials.ini
+
+# Obtain certificate with DNS verification
+sudo certbot certonly \
+  --authenticator dns-godaddy \
+  --dns-godaddy-credentials /etc/letsencrypt/godaddy/credentials.ini \
+  --dns-godaddy-propagation-seconds 60 \
+  -d example.com
+
+# Copy certificates to BGD directory
+sudo mkdir -p /app/myapp/certs
+sudo cp /etc/letsencrypt/live/example.com/fullchain.pem /app/myapp/certs/
+sudo cp /etc/letsencrypt/live/example.com/privkey.pem /app/myapp/certs/
+sudo chmod 644 /app/myapp/certs/*.pem
+```
+
+After manual setup, the plugin will detect and use the existing certificates, and handle renewal automatically.
 
 ### Audit Logging
 
