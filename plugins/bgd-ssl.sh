@@ -2,9 +2,10 @@
 #
 # bgd-ssl.sh - SSL certificate management plugin for Blue/Green Deployment
 #
-# This plugin handles SSL certificate management:
+# This plugin handles SSL certificate management using DNS verification:
+# - Supports multiple DNS providers (GoDaddy, Namecheap)
 # - Automatic certificate generation and renewal
-# - DNS challenge configuration for domain validation
+# - DNS challenge configuration for domain validation 
 # - Nginx SSL configuration
 #
 # Place this file in the plugins/ directory to automatically activate it.
@@ -18,16 +19,42 @@ bgd_register_ssl_arguments() {
   bgd_register_plugin_argument "ssl" "SSL_AUTO_RENEWAL" "true"
   bgd_register_plugin_argument "ssl" "SSL_CERT_PATH" "./certs"
   bgd_register_plugin_argument "ssl" "SSL_AUTO_INSTALL_DEPS" "true"
-  bgd_register_plugin_argument "ssl" "SSL_DNS_PLUGIN" ""
-  bgd_register_plugin_argument "ssl" "SSL_DNS_CREDENTIALS" ""
   bgd_register_plugin_argument "ssl" "SSL_DNS_PROPAGATION_WAIT" "60"
   bgd_register_plugin_argument "ssl" "SSL_SKIP_IF_CI" "true"
+  
+  # GoDaddy API credentials
+  bgd_register_plugin_argument "ssl" "GODADDY_API_KEY" ""
+  bgd_register_plugin_argument "ssl" "GODADDY_API_SECRET" ""
+  
+  # Namecheap API credentials
+  bgd_register_plugin_argument "ssl" "NAMECHEAP_API_KEY" ""
+  bgd_register_plugin_argument "ssl" "NAMECHEAP_API_USER" ""
+  bgd_register_plugin_argument "ssl" "NAMECHEAP_USERNAME" ""
 }
 
 # Check if this is a CI environment
 bgd_is_ci_environment() {
   # Check common CI environment variables
   if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${JENKINS_URL:-}" ] || [ -n "${TRAVIS:-}" ] || [ -n "${CIRCLECI:-}" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Detect which DNS provider to use based on available credentials
+bgd_get_dns_provider() {
+  if [ -n "${GODADDY_API_KEY:-}" ] && [ -n "${GODADDY_API_SECRET:-}" ]; then
+    echo "godaddy"
+  elif [ -n "${NAMECHEAP_API_KEY:-}" ] && [ -n "${NAMECHEAP_API_USER:-}" ] && [ -n "${NAMECHEAP_USERNAME:-}" ]; then
+    echo "namecheap"
+  else
+    echo ""
+  fi
+}
+
+# Check if DNS provider credentials are available
+bgd_has_dns_credentials() {
+  if [ -n "$(bgd_get_dns_provider)" ]; then
     return 0
   fi
   return 1
@@ -53,45 +80,186 @@ bgd_check_certificates() {
   fi
 }
 
-# Create a temporary Nginx config for ACME challenges
-# Note: Kept for backward compatibility with HTTP validation if needed
-bgd_setup_acme_challenge() {
+# Check if certificate exists but needs reconfiguration for DNS validation
+bgd_check_certificate_needs_reconfiguration() {
   local domain="${1:-$DOMAIN_NAME}"
-  bgd_log_info "Setting up ACME challenge for $domain"
   
-  # Create directory for ACME challenges
-  mkdir -p ./.well-known/acme-challenge
-  chmod -R 755 ./.well-known
-  
-  # Create temporary Nginx config for ACME validation
-  cat > nginx.acme.conf << EOL
-server {
-    listen 80;
-    server_name ${domain} www.${domain};
-    
-    location /.well-known/acme-challenge/ {
-        root $(pwd);
-    }
-    
-    location / {
-        return 301 https://${domain}\$request_uri;
-    }
-}
-EOL
-
-  # Get Docker Compose command
-  local docker_compose=$(bgd_get_docker_compose_cmd)
-  
-  # Backup existing config
-  if [ -f "nginx.conf" ]; then
-    cp nginx.conf nginx.conf.backup
+  # Check if certificate exists
+  if sudo certbot certificates | grep -q "$domain"; then
+    # Check if it's not configured for DNS validation
+    if ! grep -q "dns-godaddy\|dns-namecheap" "/etc/letsencrypt/renewal/$domain.conf" 2>/dev/null; then
+      bgd_log_info "Found existing certificate for $domain that needs reconfiguration for DNS validation"
+      return 0
+    fi
   fi
   
-  # Use the temporary config
-  cp nginx.acme.conf nginx.conf
+  return 1
+}
+
+# Install required dependencies
+bgd_install_ssl_dependencies() {
+  # Ensure Certbot is installed
+  if ! command -v certbot &> /dev/null; then
+    bgd_log_info "Certbot not found. Installing..."
+    sudo apt-get update
+    sudo apt-get install -y certbot
+    
+    if ! command -v certbot &> /dev/null; then
+      bgd_log_error "Failed to install certbot"
+      return 1
+    fi
+  fi
   
-  # Restart Nginx
-  $docker_compose restart nginx || bgd_log_warning "Failed to restart Nginx for ACME configuration"
+  # Install appropriate DNS plugin based on provider
+  local dns_provider=$(bgd_get_dns_provider)
+  
+  if [ "$dns_provider" = "godaddy" ]; then
+    if ! pip3 list | grep -q certbot-dns-godaddy; then
+      bgd_log_info "Installing certbot-dns-godaddy plugin..."
+      sudo pip3 install certbot-dns-godaddy
+      
+      if ! pip3 list | grep -q certbot-dns-godaddy; then
+        bgd_log_error "Failed to install certbot-dns-godaddy plugin"
+        return 1
+      fi
+    fi
+  elif [ "$dns_provider" = "namecheap" ]; then
+    if ! pip3 list | grep -q certbot-dns-namecheap; then
+      bgd_log_info "Installing certbot-dns-namecheap plugin..."
+      sudo pip3 install certbot-dns-namecheap
+      
+      if ! pip3 list | grep -q certbot-dns-namecheap; then
+        bgd_log_error "Failed to install certbot-dns-namecheap plugin"
+        return 1
+      fi
+    fi
+  else
+    bgd_log_error "No DNS provider credentials detected"
+    return 1
+  fi
+  
+  return 0
+}
+
+# Create DNS provider credentials file
+bgd_create_dns_credentials() {
+  local dns_provider=$(bgd_get_dns_provider)
+  
+  if [ "$dns_provider" = "godaddy" ]; then
+    # Create GoDaddy credentials
+    local credentials_dir="/etc/letsencrypt/godaddy"
+    local credentials_file="$credentials_dir/credentials.ini"
+    
+    if [ -n "${GODADDY_API_KEY:-}" ] && [ -n "${GODADDY_API_SECRET:-}" ]; then
+      # Create directory if it doesn't exist
+      sudo mkdir -p "$credentials_dir"
+      
+      # Create or overwrite credentials file
+      sudo bash -c "cat > $credentials_file << EOF
+dns_godaddy_key = $GODADDY_API_KEY
+dns_godaddy_secret = $GODADDY_API_SECRET
+EOF"
+      
+      # Set secure permissions
+      sudo chmod 600 "$credentials_file"
+      
+      bgd_log_info "GoDaddy credentials configured for certbot"
+      return 0
+    else
+      bgd_log_error "GoDaddy API key and secret are required"
+      return 1
+    fi
+  elif [ "$dns_provider" = "namecheap" ]; then
+    # Create Namecheap credentials
+    local credentials_dir="/etc/letsencrypt/namecheap"
+    local credentials_file="$credentials_dir/credentials.ini"
+    
+    if [ -n "${NAMECHEAP_API_KEY:-}" ] && [ -n "${NAMECHEAP_API_USER:-}" ] && [ -n "${NAMECHEAP_USERNAME:-}" ]; then
+      # Create directory if it doesn't exist
+      sudo mkdir -p "$credentials_dir"
+      
+      # Create or overwrite credentials file
+      sudo bash -c "cat > $credentials_file << EOF
+dns_namecheap_api_key = $NAMECHEAP_API_KEY
+dns_namecheap_api_user = $NAMECHEAP_API_USER
+dns_namecheap_username = $NAMECHEAP_USERNAME
+EOF"
+      
+      # Set secure permissions
+      sudo chmod 600 "$credentials_file"
+      
+      bgd_log_info "Namecheap credentials configured for certbot"
+      return 0
+    else
+      bgd_log_error "Namecheap API key, API user, and username are required"
+      return 1
+    fi
+  else
+    bgd_log_error "No DNS provider credentials detected"
+    return 1
+  fi
+}
+
+# Reconfigure existing certificate to use DNS validation
+bgd_reconfigure_certificate() {
+  local domain="${1:-$DOMAIN_NAME}"
+  local dns_provider=$(bgd_get_dns_provider)
+  local propagation_wait="${SSL_DNS_PROPAGATION_WAIT:-60}"
+  
+  bgd_log_info "Reconfiguring existing certificate for $domain to use $dns_provider DNS validation"
+  
+  # Ensure credentials are set up
+  bgd_create_dns_credentials || {
+    bgd_log_error "Failed to create DNS credentials file"
+    return 1
+  }
+  
+  local certbot_cmd="certbot certonly --force-renewal"
+  
+  if [ "$dns_provider" = "godaddy" ]; then
+    certbot_cmd+=" --authenticator dns-godaddy"
+    certbot_cmd+=" --dns-godaddy-credentials /etc/letsencrypt/godaddy/credentials.ini"
+    certbot_cmd+=" --dns-godaddy-propagation-seconds $propagation_wait"
+  elif [ "$dns_provider" = "namecheap" ]; then
+    certbot_cmd+=" --authenticator dns-namecheap"
+    certbot_cmd+=" --dns-namecheap-credentials /etc/letsencrypt/namecheap/credentials.ini"
+    certbot_cmd+=" --dns-namecheap-propagation-seconds $propagation_wait"
+  else
+    bgd_log_error "No DNS provider credentials detected"
+    return 1
+  fi
+  
+  # Add domain
+  certbot_cmd+=" -d $domain"
+  
+  # Add extra domains if specified
+  if [ -n "${SSL_DOMAINS:-}" ]; then
+    for extra_domain in ${SSL_DOMAINS//,/ }; do
+      certbot_cmd+=" -d $extra_domain"
+    done
+  fi
+  
+  # Add non-interactive flag
+  certbot_cmd+=" --non-interactive"
+  
+  bgd_log_info "Running: $certbot_cmd"
+  
+  # Run Certbot
+  eval "sudo $certbot_cmd" || {
+    bgd_log_error "Failed to reconfigure certificate"
+    return 1
+  }
+  
+  # Update our certificate path
+  local cert_path="${SSL_CERT_PATH:-./certs}"
+  mkdir -p "$cert_path"
+  sudo cp /etc/letsencrypt/live/${domain}/fullchain.pem "$cert_path/fullchain.pem"
+  sudo cp /etc/letsencrypt/live/${domain}/privkey.pem "$cert_path/privkey.pem"
+  sudo chmod 644 "$cert_path/fullchain.pem"
+  sudo chmod 644 "$cert_path/privkey.pem"
+  
+  bgd_log_success "Certificate successfully reconfigured for $dns_provider DNS validation"
+  return 0
 }
 
 # Obtain SSL certificates using Certbot with DNS verification
@@ -100,11 +268,19 @@ bgd_obtain_ssl_certificates() {
   local email="${CERTBOT_EMAIL}"
   local staging="${CERTBOT_STAGING:-false}"
   local cert_path="${SSL_CERT_PATH:-./certs}"
-  local dns_plugin="${SSL_DNS_PLUGIN:-}"
-  local dns_credentials="${SSL_DNS_CREDENTIALS:-}"
   local propagation_wait="${SSL_DNS_PROPAGATION_WAIT:-60}"
+  local dns_provider=$(bgd_get_dns_provider)
   
   bgd_log_info "Obtaining SSL certificates for $domain using DNS verification"
+  
+  # Check if DNS provider credentials are available
+  if [ -z "$dns_provider" ]; then
+    bgd_log_error "DNS provider credentials are required for SSL certificate generation"
+    bgd_log_error "Please provide either GoDaddy or Namecheap API credentials"
+    bgd_log_error "For GoDaddy: --godaddy-api-key and --godaddy-api-secret"
+    bgd_log_error "For Namecheap: --namecheap-api-key, --namecheap-api-user, and --namecheap-username"
+    return 1
+  fi
   
   # Check if we're in a CI environment
   local is_ci=false
@@ -112,97 +288,44 @@ bgd_obtain_ssl_certificates() {
     is_ci=true
     bgd_log_info "CI environment detected"
     
-    # Check if we should skip SSL in CI
-    if [ "${SSL_SKIP_IF_CI:-true}" = "true" ] && [ -z "$dns_plugin" ]; then
-      bgd_log_warning "Skipping SSL certificate generation in CI environment since no DNS plugin specified"
-      bgd_log_warning "To enable SSL in CI, set --ssl-dns-plugin and --ssl-dns-credentials"
+    # Skip if specified
+    if [ "${SSL_SKIP_IF_CI:-true}" = "true" ]; then
+      bgd_log_warning "Skipping SSL certificate generation in CI environment (--ssl-skip-if-ci=true)"
       return 0
     fi
   fi
   
+  # Check required parameters
   if [ -z "$email" ]; then
     bgd_log_error "CERTBOT_EMAIL is required for SSL certificate generation"
     return 1
   fi
   
-  # Ensure Certbot is installed
-  if ! command -v certbot &> /dev/null; then
-    if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
-      bgd_log_info "Certbot not found. Installing..."
-      sudo apt-get update
-      sudo apt-get install -y certbot
-      
-      if ! command -v certbot &> /dev/null; then
-        bgd_log_error "Failed to install certbot"
-        return 1
-      fi
-    else
-      bgd_log_error "Certbot not found and auto-install disabled"
+  # Install dependencies
+  if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
+    bgd_install_ssl_dependencies || {
+      bgd_log_error "Failed to install dependencies"
       return 1
-    fi
+    }
   fi
-
-  # Build Certbot command with DNS challenge
+  
+  # Create DNS provider credentials file
+  bgd_create_dns_credentials || {
+    bgd_log_error "Failed to create DNS credentials file"
+    return 1
+  }
+  
+  # Build Certbot command with DNS plugin
   local certbot_cmd="certbot certonly"
   
-  # Determine if we can use interactive mode
-  if [ "$is_ci" = "false" ] && [ -t 0 ] && [ -z "$dns_plugin" ]; then
-    # Interactive mode with manual DNS challenge
-    certbot_cmd+=" --manual --preferred-challenges dns"
-    
-    bgd_log_info "Interactive terminal detected. Will use manual DNS challenge."
-    bgd_log_info "You will be prompted to create DNS TXT records."
-    
-    # Display guidance for interactive DNS verification
-    echo "============================================================"
-    echo "                DNS VERIFICATION INSTRUCTIONS                "
-    echo "============================================================"
-    echo "You will be prompted to create DNS TXT records for domain verification."
-    echo ""
-    echo "For each domain, you will need to:"
-    echo "1. Create a TXT record with the provided name and value"
-    echo "2. Wait for DNS propagation (can take 5-30 minutes)"
-    echo "3. Confirm when the record is set by pressing Enter"
-    echo ""
-    echo "Tips for DNS record creation:"
-    echo "- The record name will be '_acme-challenge.<your-domain>'"
-    echo "- If your DNS provider requires just the subdomain part,"
-    echo "  enter only '_acme-challenge' without your domain"
-    echo "- Wait at least 5 minutes for DNS propagation before continuing"
-    echo "- You can verify record propagation using: "
-    echo "  dig txt _acme-challenge.<your-domain>"
-    echo ""
-    echo "Example TXT record for $domain:"
-    echo "  Name:  _acme-challenge.$domain  (or just _acme-challenge)"
-    echo "  Type:  TXT"
-    echo "  Value: [certbot will provide this value]"
-    echo "  TTL:   300 (or lowest available)"
-    echo "============================================================"
-    echo ""
-  elif [ -n "$dns_plugin" ]; then
-    # Non-interactive mode with DNS plugin
-    certbot_cmd+=" --authenticator $dns_plugin"
-    
-    if [ -n "$dns_credentials" ]; then
-      certbot_cmd+=" --$dns_plugin-credentials $dns_credentials"
-    fi
-    
-    # Add propagation-seconds if provided
-    certbot_cmd+=" --dns-${dns_plugin}-propagation-seconds $propagation_wait"
-    
-    bgd_log_info "Using DNS plugin: $dns_plugin for automated verification"
-  else
-    # Cannot proceed in non-interactive mode without a DNS plugin
-    bgd_log_error "Cannot obtain SSL certificates in non-interactive environment without a DNS plugin"
-    bgd_log_error "Please specify --ssl-dns-plugin and --ssl-dns-credentials for automated environments"
-    bgd_log_error "Example providers: dns-cloudflare, dns-route53, dns-digitalocean"
-    
-    if [ "$is_ci" = "true" ]; then
-      bgd_log_error "CI environment detected. SSL certificate generation requires DNS plugin configuration."
-      bgd_log_error "If you wish to skip SSL in CI, set --ssl-skip-if-ci=true (default)"
-    fi
-    
-    return 1
+  if [ "$dns_provider" = "godaddy" ]; then
+    certbot_cmd+=" --authenticator dns-godaddy"
+    certbot_cmd+=" --dns-godaddy-credentials /etc/letsencrypt/godaddy/credentials.ini"
+    certbot_cmd+=" --dns-godaddy-propagation-seconds $propagation_wait"
+  elif [ "$dns_provider" = "namecheap" ]; then
+    certbot_cmd+=" --authenticator dns-namecheap"
+    certbot_cmd+=" --dns-namecheap-credentials /etc/letsencrypt/namecheap/credentials.ini"
+    certbot_cmd+=" --dns-namecheap-propagation-seconds $propagation_wait"
   fi
   
   # Add domain
@@ -216,12 +339,7 @@ bgd_obtain_ssl_certificates() {
   fi
   
   # Add email and other options
-  certbot_cmd+=" --email $email --agree-tos"
-  
-  # Add non-interactive flag for non-interactive environments
-  if [ "$is_ci" = "true" ] || [ ! -t 0 ] || [ -n "$dns_plugin" ]; then
-    certbot_cmd+=" --non-interactive"
-  fi
+  certbot_cmd+=" --email $email --agree-tos --non-interactive"
   
   # Use staging if specified
   if [ "$staging" = "true" ]; then
@@ -231,7 +349,7 @@ bgd_obtain_ssl_certificates() {
   bgd_log_info "Running: $certbot_cmd"
   
   # Run Certbot
-  eval "$certbot_cmd" || {
+  eval "sudo $certbot_cmd" || {
     bgd_log_error "Failed to obtain SSL certificates"
     return 1
   }
@@ -245,7 +363,16 @@ bgd_obtain_ssl_certificates() {
   sudo chmod 644 "$cert_path/fullchain.pem"
   sudo chmod 644 "$cert_path/privkey.pem"
   
-  bgd_log_success "SSL certificates obtained successfully"
+  # Configure renewal
+  if [ "$dns_provider" = "godaddy" ]; then
+    sudo bash -c "echo 'authenticator = dns-godaddy' > /etc/letsencrypt/renewal/$domain.conf"
+    sudo bash -c "echo 'dns_godaddy_credentials = /etc/letsencrypt/godaddy/credentials.ini' >> /etc/letsencrypt/renewal/$domain.conf"
+  elif [ "$dns_provider" = "namecheap" ]; then
+    sudo bash -c "echo 'authenticator = dns-namecheap' > /etc/letsencrypt/renewal/$domain.conf"
+    sudo bash -c "echo 'dns_namecheap_credentials = /etc/letsencrypt/namecheap/credentials.ini' >> /etc/letsencrypt/renewal/$domain.conf"
+  fi
+  
+  bgd_log_success "SSL certificates obtained successfully using $dns_provider DNS verification"
   return 0
 }
 
@@ -276,11 +403,9 @@ bgd_setup_nginx_ssl() {
   return 0
 }
 
-# Set up automatic renewal cron job
+# Set up automatic renewal script
 bgd_setup_auto_renewal() {
   local domain="${1:-$DOMAIN_NAME}"
-  local dns_plugin="${SSL_DNS_PLUGIN:-}"
-  local dns_credentials="${SSL_DNS_CREDENTIALS:-}"
   
   if [ "${SSL_AUTO_RENEWAL:-true}" = "true" ]; then
     bgd_log_info "Setting up automatic renewal for $domain SSL certificate"
@@ -288,8 +413,8 @@ bgd_setup_auto_renewal() {
     # Create renewal script
     cat > renew-ssl.sh << 'EOL'
 #!/bin/bash
-# Renew SSL certificates using the same method as initial issuance
-certbot renew
+# Renew SSL certificates using certbot's renew command
+certbot renew --quiet
 # Check if renewal was successful
 if [ $? -eq 0 ]; then
   # Copy certificates to our cert path
@@ -299,6 +424,7 @@ if [ $? -eq 0 ]; then
   chmod 644 CERT_PATH/privkey.pem
   
   # Restart nginx to apply new certificates
+  cd APP_PATH
   docker compose restart nginx || docker-compose restart nginx
   echo "$(date) - Successfully renewed certificates and restarted nginx" >> CERT_PATH/renewal.log
 else
@@ -309,6 +435,7 @@ EOL
     # Replace placeholders
     sed -i "s/DOMAIN_NAME/$domain/g" renew-ssl.sh
     sed -i "s|CERT_PATH|${SSL_CERT_PATH:-./certs}|g" renew-ssl.sh
+    sed -i "s|APP_PATH|$(pwd)|g" renew-ssl.sh
     
     # Make executable
     chmod +x renew-ssl.sh
@@ -334,17 +461,42 @@ bgd_hook_pre_deploy() {
   
   if [ "${SSL_ENABLED:-true}" = "true" ]; then
     local domain="${DOMAIN_NAME:-example.com}"
+    local dns_provider=$(bgd_get_dns_provider)
     
-    bgd_log_info "Setting up SSL for $domain"
-    
-    # Check if we already have valid certificates
-    if ! bgd_check_certificates "$domain"; then
-      # Obtain certificates directly via DNS verification
-      # No need to set up ACME challenge for HTTP validation
-      bgd_obtain_ssl_certificates "$domain" || {
-        bgd_log_error "Failed to obtain SSL certificates"
-        # Continue without SSL - we can try again later
-      }
+    # Only attempt SSL if DNS provider credentials are available
+    if [ -n "$dns_provider" ]; then
+      bgd_log_info "Setting up SSL for $domain using $dns_provider DNS verification"
+      
+      # Install required dependencies
+      if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
+        bgd_install_ssl_dependencies || {
+          bgd_log_error "Failed to install dependencies"
+          bgd_log_warning "Continuing deployment without SSL"
+          return 0
+        }
+      fi
+      
+      # Check if existing certificate needs reconfiguration
+      if bgd_check_certificate_needs_reconfiguration "$domain"; then
+        bgd_reconfigure_certificate "$domain" || {
+          bgd_log_error "Failed to reconfigure certificate"
+          bgd_log_warning "Will try obtaining a new certificate instead"
+        }
+      fi
+      
+      # Check if we still need to obtain a new certificate
+      if ! bgd_check_certificates "$domain"; then
+        # Obtain certificates
+        bgd_obtain_ssl_certificates "$domain" || {
+          bgd_log_error "Failed to obtain SSL certificates"
+          bgd_log_warning "Continuing deployment without SSL"
+        }
+      fi
+    else
+      bgd_log_warning "DNS provider API credentials not provided, skipping SSL setup"
+      bgd_log_warning "To enable SSL, provide one of the following:"
+      bgd_log_warning "  GoDaddy: --godaddy-api-key and --godaddy-api-secret"
+      bgd_log_warning "  Namecheap: --namecheap-api-key, --namecheap-api-user, and --namecheap-username"
     fi
   fi
   
@@ -355,10 +507,10 @@ bgd_hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
-  if [ "${SSL_ENABLED:-true}" = "true" ]; then
+  if [ "${SSL_ENABLED:-true}" = "true" ] && bgd_has_dns_credentials; then
     local domain="${DOMAIN_NAME:-example.com}"
     
-    # Set up Nginx with SSL
+    # Set up Nginx with SSL if certificates exist
     if bgd_check_certificates "$domain"; then
       bgd_setup_nginx_ssl "$domain"
       bgd_setup_auto_renewal "$domain"
@@ -373,7 +525,7 @@ bgd_hook_post_deploy() {
 bgd_hook_post_cutover() {
   local target_env="$1"
   
-  if [ "${SSL_ENABLED:-true}" = "true" ]; then
+  if [ "${SSL_ENABLED:-true}" = "true" ] && bgd_has_dns_credentials; then
     local domain="${DOMAIN_NAME:-example.com}"
     
     # Ensure Nginx config is updated after cutover
