@@ -119,7 +119,7 @@ bgd_obtain_ssl_certificates() {
   if [ -n "${SSL_DOMAINS:-}" ]; then
     for extra_domain in ${SSL_DOMAINS//,/ }; do
       certbot_cmd+=" -d $extra_domain"
-    end
+    done
   fi
   
   # Add email and other options
