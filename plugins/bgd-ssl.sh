@@ -4,7 +4,7 @@
 #
 # This plugin handles SSL certificate management:
 # - Automatic certificate generation and renewal
-# - ACME challenge configuration
+# - DNS challenge configuration for domain validation
 # - Nginx SSL configuration
 #
 # Place this file in the plugins/ directory to automatically activate it.
@@ -18,6 +18,19 @@ bgd_register_ssl_arguments() {
   bgd_register_plugin_argument "ssl" "SSL_AUTO_RENEWAL" "true"
   bgd_register_plugin_argument "ssl" "SSL_CERT_PATH" "./certs"
   bgd_register_plugin_argument "ssl" "SSL_AUTO_INSTALL_DEPS" "true"
+  bgd_register_plugin_argument "ssl" "SSL_DNS_PLUGIN" ""
+  bgd_register_plugin_argument "ssl" "SSL_DNS_CREDENTIALS" ""
+  bgd_register_plugin_argument "ssl" "SSL_DNS_PROPAGATION_WAIT" "60"
+  bgd_register_plugin_argument "ssl" "SSL_SKIP_IF_CI" "true"
+}
+
+# Check if this is a CI environment
+bgd_is_ci_environment() {
+  # Check common CI environment variables
+  if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ] || [ -n "${GITLAB_CI:-}" ] || [ -n "${JENKINS_URL:-}" ] || [ -n "${TRAVIS:-}" ] || [ -n "${CIRCLECI:-}" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # Check if SSL certificates exist
@@ -41,6 +54,7 @@ bgd_check_certificates() {
 }
 
 # Create a temporary Nginx config for ACME challenges
+# Note: Kept for backward compatibility with HTTP validation if needed
 bgd_setup_acme_challenge() {
   local domain="${1:-$DOMAIN_NAME}"
   bgd_log_info "Setting up ACME challenge for $domain"
@@ -80,15 +94,31 @@ EOL
   $docker_compose restart nginx || bgd_log_warning "Failed to restart Nginx for ACME configuration"
 }
 
-# Obtain SSL certificates using Certbot
+# Obtain SSL certificates using Certbot with DNS verification
 bgd_obtain_ssl_certificates() {
   local domain="${1:-$DOMAIN_NAME}"
   local email="${CERTBOT_EMAIL}"
-  local webroot="${3:-$(pwd)}"
   local staging="${CERTBOT_STAGING:-false}"
   local cert_path="${SSL_CERT_PATH:-./certs}"
+  local dns_plugin="${SSL_DNS_PLUGIN:-}"
+  local dns_credentials="${SSL_DNS_CREDENTIALS:-}"
+  local propagation_wait="${SSL_DNS_PROPAGATION_WAIT:-60}"
   
-  bgd_log_info "Obtaining SSL certificates for $domain"
+  bgd_log_info "Obtaining SSL certificates for $domain using DNS verification"
+  
+  # Check if we're in a CI environment
+  local is_ci=false
+  if bgd_is_ci_environment; then
+    is_ci=true
+    bgd_log_info "CI environment detected"
+    
+    # Check if we should skip SSL in CI
+    if [ "${SSL_SKIP_IF_CI:-true}" = "true" ] && [ -z "$dns_plugin" ]; then
+      bgd_log_warning "Skipping SSL certificate generation in CI environment since no DNS plugin specified"
+      bgd_log_warning "To enable SSL in CI, set --ssl-dns-plugin and --ssl-dns-credentials"
+      return 0
+    fi
+  fi
   
   if [ -z "$email" ]; then
     bgd_log_error "CERTBOT_EMAIL is required for SSL certificate generation"
@@ -112,8 +142,71 @@ bgd_obtain_ssl_certificates() {
     fi
   fi
 
-  # Build Certbot command
-  local certbot_cmd="certbot certonly --webroot -w $webroot -d ${domain}"
+  # Build Certbot command with DNS challenge
+  local certbot_cmd="certbot certonly"
+  
+  # Determine if we can use interactive mode
+  if [ "$is_ci" = "false" ] && [ -t 0 ] && [ -z "$dns_plugin" ]; then
+    # Interactive mode with manual DNS challenge
+    certbot_cmd+=" --manual --preferred-challenges dns"
+    
+    bgd_log_info "Interactive terminal detected. Will use manual DNS challenge."
+    bgd_log_info "You will be prompted to create DNS TXT records."
+    
+    # Display guidance for interactive DNS verification
+    echo "============================================================"
+    echo "                DNS VERIFICATION INSTRUCTIONS                "
+    echo "============================================================"
+    echo "You will be prompted to create DNS TXT records for domain verification."
+    echo ""
+    echo "For each domain, you will need to:"
+    echo "1. Create a TXT record with the provided name and value"
+    echo "2. Wait for DNS propagation (can take 5-30 minutes)"
+    echo "3. Confirm when the record is set by pressing Enter"
+    echo ""
+    echo "Tips for DNS record creation:"
+    echo "- The record name will be '_acme-challenge.<your-domain>'"
+    echo "- If your DNS provider requires just the subdomain part,"
+    echo "  enter only '_acme-challenge' without your domain"
+    echo "- Wait at least 5 minutes for DNS propagation before continuing"
+    echo "- You can verify record propagation using: "
+    echo "  dig txt _acme-challenge.<your-domain>"
+    echo ""
+    echo "Example TXT record for $domain:"
+    echo "  Name:  _acme-challenge.$domain  (or just _acme-challenge)"
+    echo "  Type:  TXT"
+    echo "  Value: [certbot will provide this value]"
+    echo "  TTL:   300 (or lowest available)"
+    echo "============================================================"
+    echo ""
+  elif [ -n "$dns_plugin" ]; then
+    # Non-interactive mode with DNS plugin
+    certbot_cmd+=" --authenticator $dns_plugin"
+    
+    if [ -n "$dns_credentials" ]; then
+      certbot_cmd+=" --$dns_plugin-credentials $dns_credentials"
+    fi
+    
+    # Add propagation-seconds if provided
+    certbot_cmd+=" --dns-${dns_plugin}-propagation-seconds $propagation_wait"
+    
+    bgd_log_info "Using DNS plugin: $dns_plugin for automated verification"
+  else
+    # Cannot proceed in non-interactive mode without a DNS plugin
+    bgd_log_error "Cannot obtain SSL certificates in non-interactive environment without a DNS plugin"
+    bgd_log_error "Please specify --ssl-dns-plugin and --ssl-dns-credentials for automated environments"
+    bgd_log_error "Example providers: dns-cloudflare, dns-route53, dns-digitalocean"
+    
+    if [ "$is_ci" = "true" ]; then
+      bgd_log_error "CI environment detected. SSL certificate generation requires DNS plugin configuration."
+      bgd_log_error "If you wish to skip SSL in CI, set --ssl-skip-if-ci=true (default)"
+    fi
+    
+    return 1
+  fi
+  
+  # Add domain
+  certbot_cmd+=" -d ${domain}"
   
   # Add extra domains if specified
   if [ -n "${SSL_DOMAINS:-}" ]; then
@@ -123,7 +216,12 @@ bgd_obtain_ssl_certificates() {
   fi
   
   # Add email and other options
-  certbot_cmd+=" --email $email --agree-tos --non-interactive"
+  certbot_cmd+=" --email $email --agree-tos"
+  
+  # Add non-interactive flag for non-interactive environments
+  if [ "$is_ci" = "true" ] || [ ! -t 0 ] || [ -n "$dns_plugin" ]; then
+    certbot_cmd+=" --non-interactive"
+  fi
   
   # Use staging if specified
   if [ "$staging" = "true" ]; then
@@ -181,6 +279,8 @@ bgd_setup_nginx_ssl() {
 # Set up automatic renewal cron job
 bgd_setup_auto_renewal() {
   local domain="${1:-$DOMAIN_NAME}"
+  local dns_plugin="${SSL_DNS_PLUGIN:-}"
+  local dns_credentials="${SSL_DNS_CREDENTIALS:-}"
   
   if [ "${SSL_AUTO_RENEWAL:-true}" = "true" ]; then
     bgd_log_info "Setting up automatic renewal for $domain SSL certificate"
@@ -188,10 +288,22 @@ bgd_setup_auto_renewal() {
     # Create renewal script
     cat > renew-ssl.sh << 'EOL'
 #!/bin/bash
+# Renew SSL certificates using the same method as initial issuance
 certbot renew
-cp /etc/letsencrypt/live/DOMAIN_NAME/fullchain.pem CERT_PATH/fullchain.pem
-cp /etc/letsencrypt/live/DOMAIN_NAME/privkey.pem CERT_PATH/privkey.pem
-docker compose restart nginx || docker-compose restart nginx
+# Check if renewal was successful
+if [ $? -eq 0 ]; then
+  # Copy certificates to our cert path
+  cp /etc/letsencrypt/live/DOMAIN_NAME/fullchain.pem CERT_PATH/fullchain.pem
+  cp /etc/letsencrypt/live/DOMAIN_NAME/privkey.pem CERT_PATH/privkey.pem
+  chmod 644 CERT_PATH/fullchain.pem
+  chmod 644 CERT_PATH/privkey.pem
+  
+  # Restart nginx to apply new certificates
+  docker compose restart nginx || docker-compose restart nginx
+  echo "$(date) - Successfully renewed certificates and restarted nginx" >> CERT_PATH/renewal.log
+else
+  echo "$(date) - Certificate renewal failed" >> CERT_PATH/renewal.log
+fi
 EOL
     
     # Replace placeholders
@@ -227,10 +339,8 @@ bgd_hook_pre_deploy() {
     
     # Check if we already have valid certificates
     if ! bgd_check_certificates "$domain"; then
-      # Set up ACME challenge
-      bgd_setup_acme_challenge "$domain"
-      
-      # Obtain certificates
+      # Obtain certificates directly via DNS verification
+      # No need to set up ACME challenge for HTTP validation
       bgd_obtain_ssl_certificates "$domain" || {
         bgd_log_error "Failed to obtain SSL certificates"
         # Continue without SSL - we can try again later
