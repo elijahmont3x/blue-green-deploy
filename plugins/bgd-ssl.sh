@@ -114,24 +114,38 @@ bgd_install_ssl_dependencies() {
   local dns_provider=$(bgd_get_dns_provider)
   
   if [ "$dns_provider" = "godaddy" ]; then
-    if ! pip3 list | grep -q certbot-dns-godaddy; then
-      bgd_log_info "Installing certbot-dns-godaddy plugin..."
-      sudo pip3 install certbot-dns-godaddy
-      
-      if ! pip3 list | grep -q certbot-dns-godaddy; then
+    # Try to install with apt first (system package)
+    if apt-cache search python3-certbot-dns-godaddy | grep -q python3-certbot-dns-godaddy; then
+      bgd_log_info "Installing certbot-dns-godaddy plugin via apt..."
+      sudo apt-get install -y python3-certbot-dns-godaddy || {
+        bgd_log_error "Failed to install system package, falling back to pip"
+      }
+    fi
+    
+    # If apt install failed or package not available, use pip
+    if ! python3 -c "import certbot_dns_godaddy" 2>/dev/null; then
+      bgd_log_info "Installing certbot-dns-godaddy plugin via pip..."
+      sudo pip3 install certbot-dns-godaddy || {
         bgd_log_error "Failed to install certbot-dns-godaddy plugin"
         return 1
-      fi
+      }
     fi
   elif [ "$dns_provider" = "namecheap" ]; then
-    if ! pip3 list | grep -q certbot-dns-namecheap; then
-      bgd_log_info "Installing certbot-dns-namecheap plugin..."
-      sudo pip3 install certbot-dns-namecheap
-      
-      if ! pip3 list | grep -q certbot-dns-namecheap; then
+    # Try to install with apt first (system package)
+    if apt-cache search python3-certbot-dns-namecheap | grep -q python3-certbot-dns-namecheap; then
+      bgd_log_info "Installing certbot-dns-namecheap plugin via apt..."
+      sudo apt-get install -y python3-certbot-dns-namecheap || {
+        bgd_log_error "Failed to install system package, falling back to pip"
+      }
+    fi
+    
+    # If apt install failed or package not available, use pip
+    if ! python3 -c "import certbot_dns_namecheap" 2>/dev/null; then
+      bgd_log_info "Installing certbot-dns-namecheap plugin via pip..."
+      sudo pip3 install certbot-dns-namecheap || {
         bgd_log_error "Failed to install certbot-dns-namecheap plugin"
         return 1
-      fi
+      }
     fi
   else
     bgd_log_error "No DNS provider credentials detected"
