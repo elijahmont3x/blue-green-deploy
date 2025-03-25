@@ -113,7 +113,7 @@ bgd_obtain_ssl_certificates() {
   fi
 
   # Build Certbot command
-  local certbot_cmd="certbot certonly --webroot -w $webroot -d ${domain} -d www.${domain}"
+  local certbot_cmd="certbot certonly --webroot -w $webroot -d ${domain}"
   
   # Add extra domains if specified
   if [ -n "${SSL_DOMAINS:-}" ]; then
