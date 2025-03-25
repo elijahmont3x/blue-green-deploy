@@ -1,162 +1,277 @@
 #!/bin/bash
-# Blue-Green Deployment SSL certificate management module
+#
+# bgd-ssl.sh - SSL certificate management plugin for Blue/Green Deployment
+#
+# This plugin handles SSL certificate management:
+# - Automatic certificate generation and renewal
+# - ACME challenge configuration
+# - Nginx SSL configuration
+#
+# Place this file in the plugins/ directory to automatically activate it.
 
-# Function to check if certificate exists and is valid
-bgd_check_certificate() {
-  local domain=$1
-  local renewal_days=${2:-30}
-  local cert_path="/etc/letsencrypt/live/$domain/fullchain.pem"
+# Register plugin arguments
+bgd_register_ssl_arguments() {
+  bgd_register_plugin_argument "ssl" "SSL_ENABLED" "true"
+  bgd_register_plugin_argument "ssl" "CERTBOT_EMAIL" ""
+  bgd_register_plugin_argument "ssl" "CERTBOT_STAGING" "false"
+  bgd_register_plugin_argument "ssl" "SSL_DOMAINS" ""
+  bgd_register_plugin_argument "ssl" "SSL_AUTO_RENEWAL" "true"
+  bgd_register_plugin_argument "ssl" "SSL_CERT_PATH" "./certs"
+  bgd_register_plugin_argument "ssl" "SSL_AUTO_INSTALL_DEPS" "true"
+}
+
+# Check if SSL certificates exist
+bgd_check_certificates() {
+  local domain="${1:-$DOMAIN_NAME}"
+  local cert_path="${SSL_CERT_PATH:-./certs}"
   
-  if [ -f "$cert_path" ]; then
-    echo "[INFO] Certificate exists for $domain, checking validity..."
-    
-    # Get certificate expiry date in seconds since epoch
-    local expiry_date=$(date -d "$(openssl x509 -enddate -noout -in "$cert_path" | cut -d= -f2)" +%s)
-    local current_date=$(date +%s)
-    local seconds_until_expiry=$((expiry_date - current_date))
-    local days_until_expiry=$((seconds_until_expiry / 86400))
-    
-    echo "[INFO] Certificate for $domain expires in $days_until_expiry days"
-    
-    if [ $days_until_expiry -le $renewal_days ]; then
-      echo "[INFO] Certificate will expire soon ($days_until_expiry days), renewal needed"
-      return 1  # Renewal needed
+  if [ -f "$cert_path/fullchain.pem" ] && [ -f "$cert_path/privkey.pem" ]; then
+    # Check if certificate is valid and not expired
+    if openssl x509 -checkend 2592000 -noout -in "$cert_path/fullchain.pem" &>/dev/null; then
+      bgd_log_info "Valid SSL certificates found for $domain"
+      return 0
     else
-      echo "[INFO] Certificate is still valid for $days_until_expiry days, no renewal needed"
-      return 0  # No renewal needed
+      bgd_log_warning "SSL certificate for $domain will expire soon or is invalid"
+      return 1
     fi
   else
-    echo "[INFO] No existing certificate found for $domain, obtaining new one..."
-    return 1  # Obtain new certificate
-  fi
-}
-
-# Function to reload Nginx in a container-aware manner
-bgd_reload_nginx() {
-  local app_name=$1
-  local environment=${2:-blue}
-  
-  echo "[INFO] Reloading Nginx to apply certificate changes..."
-  
-  # Check for specific container first
-  if docker ps --format '{{.Names}}' | grep -q "${app_name}-${environment}-nginx"; then
-    local nginx_container=$(docker ps --format '{{.Names}}' | grep "${app_name}-${environment}-nginx" | head -n1)
-    echo "[INFO] Reloading Nginx in container: $nginx_container"
-    docker exec $nginx_container nginx -s reload
-    return $?
-  # Then check for standard nginx container
-  elif docker ps | grep -q nginx; then
-    local nginx_container=$(docker ps | grep nginx | awk '{print $1}' | head -n1)
-    echo "[INFO] Reloading Nginx in container: $nginx_container"
-    docker exec $nginx_container nginx -s reload
-    return $?
-  # Finally try systemd
-  elif command -v systemctl &> /dev/null && systemctl is-active nginx &> /dev/null; then
-    echo "[INFO] Reloading Nginx using systemctl"
-    sudo systemctl reload nginx
-    return $?
-  else
-    echo "[WARN] No method found to reload Nginx"
+    bgd_log_info "No SSL certificates found for $domain"
     return 1
   fi
 }
 
-# Function to generate Diffie-Hellman parameters
-bgd_generate_dhparam() {
-  local dhparam_dir="/etc/nginx/certs"
-  local dhparam_file="$dhparam_dir/dhparam.pem"
-  local dhparam_bits=2048
-
-  echo "===== GENERATING STRONG DH PARAMETERS ====="
-  echo "This may take a few minutes..."
-
-  # Create directory if it doesn't exist
-  if [ ! -d "$dhparam_dir" ]; then
-    echo "Creating certificates directory"
-    mkdir -p "$dhparam_dir"
-  fi
-
-  # Check if file already exists
-  if [ -f "$dhparam_file" ]; then
-    echo "DH parameters file already exists at $dhparam_file"
-    echo "Delete file manually if you want to regenerate it"
-  else
-    # Generate DH parameters
-    openssl dhparam -out "$dhparam_file" $dhparam_bits
+# Create a temporary Nginx config for ACME challenges
+bgd_setup_acme_challenge() {
+  local domain="${1:-$DOMAIN_NAME}"
+  bgd_log_info "Setting up ACME challenge for $domain"
+  
+  # Create directory for ACME challenges
+  mkdir -p ./.well-known/acme-challenge
+  chmod -R 755 ./.well-known
+  
+  # Create temporary Nginx config for ACME validation
+  cat > nginx.acme.conf << EOL
+server {
+    listen 80;
+    server_name ${domain} www.${domain};
     
-    # Set secure permissions
-    chmod 644 "$dhparam_file"
+    location /.well-known/acme-challenge/ {
+        root $(pwd);
+    }
     
-    echo "DH parameters generated successfully"
-  fi
+    location / {
+        return 301 https://${domain}\$request_uri;
+    }
+}
+EOL
 
-  echo "===== DH PARAMETERS SETUP COMPLETE ====="
+  # Get Docker Compose command
+  local docker_compose=$(bgd_get_docker_compose_cmd)
+  
+  # Backup existing config
+  if [ -f "nginx.conf" ]; then
+    cp nginx.conf nginx.conf.backup
+  fi
+  
+  # Use the temporary config
+  cp nginx.acme.conf nginx.conf
+  
+  # Restart Nginx
+  $docker_compose restart nginx || bgd_log_warning "Failed to restart Nginx for ACME configuration"
 }
 
-# Main function to obtain/renew SSL certificates
-bgd_manage_ssl() {
-  local domain=$1
-  local email=$2
-  local webroot=${3:-"/var/www/html"}
-  local renewal_days=${4:-30}
-  local force=${5:-false}
+# Obtain SSL certificates using Certbot
+bgd_obtain_ssl_certificates() {
+  local domain="${1:-$DOMAIN_NAME}"
+  local email="${CERTBOT_EMAIL}"
+  local webroot="${3:-$(pwd)}"
+  local staging="${CERTBOT_STAGING:-false}"
+  local cert_path="${SSL_CERT_PATH:-./certs}"
   
-  # Ensure we have required parameters
-  if [ -z "$domain" ] || [ -z "$email" ]; then
-    echo "[ERROR] Domain and email are required for SSL certificate management"
+  bgd_log_info "Obtaining SSL certificates for $domain"
+  
+  if [ -z "$email" ]; then
+    bgd_log_error "CERTBOT_EMAIL is required for SSL certificate generation"
     return 1
   fi
-  
-  echo "[INFO] Managing SSL certificates for $domain"
   
   # Ensure Certbot is installed
   if ! command -v certbot &> /dev/null; then
-    echo "[INFO] Certbot not found, installing..."
-    sudo apt-get update
-    sudo apt-get install -y certbot
-  fi
-  
-  # Check if we need to get/renew a certificate
-  if [ "$force" = true ] || ! bgd_check_certificate "$domain" "$renewal_days"; then
-    echo "[INFO] Obtaining/renewing certificate for $domain..."
-    
-    # Create webroot directory if it doesn't exist
-    if [ ! -d "$webroot" ]; then
-      echo "[INFO] Creating webroot directory: $webroot"
-      mkdir -p "$webroot"
-    fi
-    
-    # Set up acme-challenge directory
-    local acme_dir="$webroot/.well-known/acme-challenge"
-    mkdir -p "$acme_dir"
-    
-    # Make webroot accessible
-    chmod -R 755 "$webroot"
-    
-    # Obtain/renew certificate
-    sudo certbot certonly --webroot -w "$webroot" -d "$domain" --email "$email" \
-      --agree-tos --non-interactive --keep-until-expiring --expand
-    
-    local cert_result=$?
-    if [ $cert_result -ne 0 ]; then
-      echo "[ERROR] Failed to obtain/renew certificate for $domain"
+    if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
+      bgd_log_info "Certbot not found. Installing..."
+      sudo apt-get update
+      sudo apt-get install -y certbot
+      
+      if ! command -v certbot &> /dev/null; then
+        bgd_log_error "Failed to install certbot"
+        return 1
+      fi
+    else
+      bgd_log_error "Certbot not found and auto-install disabled"
       return 1
     fi
-    
-    echo "[INFO] Certificate successfully obtained/renewed for $domain"
-  else
-    echo "[INFO] Certificate for $domain is still valid, no action required"
   fi
 
-  # Generate DH parameters if not already present
-  bgd_generate_dhparam
-
-  # Reload Nginx to apply the new certificates
-  bgd_reload_nginx "$APP_NAME" "$ENV_NAME"
+  # Build Certbot command
+  local certbot_cmd="certbot certonly --webroot -w $webroot -d ${domain} -d www.${domain}"
+  
+  # Add extra domains if specified
+  if [ -n "${SSL_DOMAINS:-}" ]; then
+    for extra_domain in ${SSL_DOMAINS//,/ }; do
+      certbot_cmd+=" -d $extra_domain"
+    end
+  fi
+  
+  # Add email and other options
+  certbot_cmd+=" --email $email --agree-tos --non-interactive"
+  
+  # Use staging if specified
+  if [ "$staging" = "true" ]; then
+    certbot_cmd+=" --staging"
+  fi
+  
+  bgd_log_info "Running: $certbot_cmd"
+  
+  # Run Certbot
+  eval "$certbot_cmd" || {
+    bgd_log_error "Failed to obtain SSL certificates"
+    return 1
+  }
+  
+  # Create certificate directory
+  mkdir -p "$cert_path"
+  
+  # Copy certificates to our cert path
+  sudo cp /etc/letsencrypt/live/${domain}/fullchain.pem "$cert_path/fullchain.pem"
+  sudo cp /etc/letsencrypt/live/${domain}/privkey.pem "$cert_path/privkey.pem"
+  sudo chmod 644 "$cert_path/fullchain.pem"
+  sudo chmod 644 "$cert_path/privkey.pem"
+  
+  bgd_log_success "SSL certificates obtained successfully"
+  return 0
 }
 
-# Export functions for use in other scripts
-export -f bgd_check_certificate
-export -f bgd_reload_nginx
-export -f bgd_generate_dhparam
-export -f bgd_manage_ssl
+# Set up Nginx with SSL configuration
+bgd_setup_nginx_ssl() {
+  local domain="${1:-$DOMAIN_NAME}"
+  local cert_path="${SSL_CERT_PATH:-./certs}"
+  local template_dir="${BGD_SCRIPT_DIR:-./scripts}/../config/templates"
+  
+  bgd_log_info "Setting up Nginx SSL configuration for $domain"
+  
+  # Get the appropriate template
+  local template="$template_dir/nginx-multi-domain.conf.template"
+  if [ ! -f "$template" ]; then
+    bgd_log_warning "Multi-domain template not found, using single-env template"
+    template="$template_dir/nginx-single-env.conf.template"
+  fi
+  
+  if [ ! -f "$template" ]; then
+    bgd_log_error "No Nginx template found"
+    return 1
+  fi
+  
+  # Generate SSL-enabled config
+  bgd_update_traffic_distribution 5 5 "$template" "nginx.conf"
+  
+  bgd_log_success "Nginx SSL configuration updated"
+  return 0
+}
+
+# Set up automatic renewal cron job
+bgd_setup_auto_renewal() {
+  local domain="${1:-$DOMAIN_NAME}"
+  
+  if [ "${SSL_AUTO_RENEWAL:-true}" = "true" ]; then
+    bgd_log_info "Setting up automatic renewal for $domain SSL certificate"
+    
+    # Create renewal script
+    cat > renew-ssl.sh << 'EOL'
+#!/bin/bash
+certbot renew
+cp /etc/letsencrypt/live/DOMAIN_NAME/fullchain.pem CERT_PATH/fullchain.pem
+cp /etc/letsencrypt/live/DOMAIN_NAME/privkey.pem CERT_PATH/privkey.pem
+docker compose restart nginx || docker-compose restart nginx
+EOL
+    
+    # Replace placeholders
+    sed -i "s/DOMAIN_NAME/$domain/g" renew-ssl.sh
+    sed -i "s|CERT_PATH|${SSL_CERT_PATH:-./certs}|g" renew-ssl.sh
+    
+    # Make executable
+    chmod +x renew-ssl.sh
+    
+    # Add cron job to run twice daily (standard for Let's Encrypt)
+    crontab -l > mycron || echo "" > mycron
+    if ! grep -q "renew-ssl.sh" mycron; then
+      echo "0 0,12 * * * $(pwd)/renew-ssl.sh > $(pwd)/logs/renew-ssl.log 2>&1" >> mycron
+      crontab mycron
+      bgd_log_info "Added cron job for SSL certificate renewal"
+    else
+      bgd_log_info "SSL renewal cron job already exists"
+    fi
+    
+    rm mycron
+  fi
+}
+
+# SSL Plugin Hooks
+bgd_hook_pre_deploy() {
+  local version="$1"
+  local app_name="$2"
+  
+  if [ "${SSL_ENABLED:-true}" = "true" ]; then
+    local domain="${DOMAIN_NAME:-example.com}"
+    
+    bgd_log_info "Setting up SSL for $domain"
+    
+    # Check if we already have valid certificates
+    if ! bgd_check_certificates "$domain"; then
+      # Set up ACME challenge
+      bgd_setup_acme_challenge "$domain"
+      
+      # Obtain certificates
+      bgd_obtain_ssl_certificates "$domain" || {
+        bgd_log_error "Failed to obtain SSL certificates"
+        # Continue without SSL - we can try again later
+      }
+    fi
+  fi
+  
+  return 0
+}
+
+bgd_hook_post_deploy() {
+  local version="$1"
+  local env_name="$2"
+  
+  if [ "${SSL_ENABLED:-true}" = "true" ]; then
+    local domain="${DOMAIN_NAME:-example.com}"
+    
+    # Set up Nginx with SSL
+    if bgd_check_certificates "$domain"; then
+      bgd_setup_nginx_ssl "$domain"
+      bgd_setup_auto_renewal "$domain"
+    else
+      bgd_log_warning "SSL certificates not available, using HTTP only"
+    fi
+  fi
+  
+  return 0
+}
+
+bgd_hook_post_cutover() {
+  local target_env="$1"
+  
+  if [ "${SSL_ENABLED:-true}" = "true" ]; then
+    local domain="${DOMAIN_NAME:-example.com}"
+    
+    # Ensure Nginx config is updated after cutover
+    if bgd_check_certificates "$domain"; then
+      bgd_log_info "Updating Nginx SSL configuration after cutover"
+      bgd_setup_nginx_ssl "$domain"
+    fi
+  fi
+  
+  return 0
+}
