@@ -888,7 +888,7 @@ The service discovery plugin (`bgd-service-discovery.sh`) enables automatic serv
 
 ### SSL Automation
 
-The SSL automation plugin (`bgd-ssl-automation.sh`) handles SSL certificate management with Let's Encrypt:
+The SSL automation plugin (`bgd-ssl.sh`) handles SSL certificate management with Let's Encrypt:
 
 - Automatic certificate generation and renewal
 - ACME challenge configuration
