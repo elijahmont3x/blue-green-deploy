@@ -17,6 +17,49 @@ bgd_register_ssl_automation_arguments() {
   bgd_register_plugin_argument "ssl-automation" "SSL_DOMAINS" ""
   bgd_register_plugin_argument "ssl-automation" "SSL_AUTO_RENEWAL" "true"
   bgd_register_plugin_argument "ssl-automation" "SSL_CERT_PATH" "./certs"
+  bgd_register_plugin_argument "ssl-automation" "SSL_AUTO_INSTALL_DEPS" "true"
+}
+
+# Check if required tools are installed
+bgd_check_ssl_dependencies() {
+  if ! command -v certbot &> /dev/null; then
+    if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
+      bgd_log_info "Certbot not found. Attempting to install it..."
+      
+      # Check which package manager is available
+      if command -v apt-get &> /dev/null; then
+        bgd_log_info "Using apt-get to install certbot..."
+        sudo apt-get update
+        sudo apt-get install -y certbot
+      elif command -v yum &> /dev/null; then
+        bgd_log_info "Using yum to install certbot..."
+        sudo yum install -y certbot
+      elif command -v dnf &> /dev/null; then
+        bgd_log_info "Using dnf to install certbot..."
+        sudo dnf install -y certbot
+      elif command -v brew &> /dev/null; then
+        bgd_log_info "Using brew to install certbot..."
+        brew install certbot
+      else
+        bgd_log_error "Could not determine package manager to install certbot"
+        bgd_log_error "Please install certbot manually: https://certbot.eff.org/instructions"
+        return 1
+      fi
+      
+      # Verify installation
+      if ! command -v certbot &> /dev/null; then
+        bgd_log_error "Failed to install certbot automatically"
+        bgd_log_error "Please install certbot manually: https://certbot.eff.org/instructions"
+        return 1
+      fi
+    else
+      bgd_log_error "Certbot not found. Please install certbot: https://certbot.eff.org/instructions"
+      bgd_log_error "Or set --ssl-auto-install-deps=true to attempt automatic installation"
+      return 1
+    fi
+  fi
+  
+  return 0
 }
 
 # Check if SSL certificates exist
@@ -93,6 +136,9 @@ bgd_obtain_certificates() {
     return 1
   fi
   
+  # Check dependencies first
+  bgd_check_ssl_dependencies || return 1
+  
   # Create cert directory if it doesn't exist
   bgd_ensure_directory "$cert_path"
   
@@ -113,6 +159,8 @@ bgd_obtain_certificates() {
   if [ "$staging" = "true" ]; then
     certbot_cmd+=" --staging"
   fi
+  
+  bgd_log_info "Running: $certbot_cmd"
   
   # Run Certbot
   eval "$certbot_cmd" || {
@@ -246,6 +294,12 @@ bgd_hook_pre_deploy() {
     
     # Check if we already have valid certificates
     if ! bgd_check_certificates "$domain"; then
+      # Check dependencies first
+      if ! bgd_check_ssl_dependencies; then
+        bgd_log_warning "SSL dependencies not satisfied. Continuing without SSL."
+        return 0
+      fi
+      
       # Set up ACME challenge
       bgd_setup_acme_challenge "$domain"
       
