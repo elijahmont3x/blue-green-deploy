@@ -1,6 +1,6 @@
 # Blue/Green Deployment System Usage Examples
 
-This document provides practical examples of how to use the enhanced Blue/Green Deployment System in various scenarios.
+This document provides practical examples of how to use the Blue/Green Deployment System in various scenarios.
 
 ## Table of Contents
 
@@ -9,8 +9,7 @@ This document provides practical examples of how to use the enhanced Blue/Green 
 - [Using the Database Migrations Plugin](#using-the-database-migrations-plugin)
 - [Using the Service Discovery Plugin](#using-the-service-discovery-plugin)
 - [Using the SSL Automation Plugin](#using-the-ssl-automation-plugin)
-- [Using the Audit Logging Plugin](#using-the-audit-logging-plugin)
-- [Custom Plugin Example](#custom-plugin-example)
+- [Using the Notification Plugin](#using-the-notification-plugin)
 - [Advanced Scenarios](#advanced-scenarios)
   - [Full Multi-Environment Setup](#full-multi-environment-setup)
   - [Hybrid Frontend/Backend Deployment](#hybrid-frontendbackend-deployment)
@@ -30,10 +29,7 @@ This example shows a basic deployment of a simple application:
   --green-port=8082 \
   --health-endpoint=/health
 
-# After deployment completes, complete the cutover
-./scripts/bgd-cutover.sh blue --app-name=myapp
-
-# For the next deployment (to the green environment)
+# For subsequent deployments
 ./scripts/bgd-deploy.sh v1.0.1 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
@@ -180,7 +176,7 @@ services:
 
   # Database (shared)
   db:
-    image: postgres:14-alpine
+    image: postgres:15-alpine
     restart: unless-stopped
     environment:
       - POSTGRES_DB=${DB_NAME:-myapp}
@@ -267,47 +263,6 @@ Then use it in your deployment:
   --migrations-cmd="./migrations.sh"
 ```
 
-### GitHub Actions Workflow with Database Migrations
-
-```yaml
-name: Deploy with Migrations
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set version
-        id: versioning
-        run: echo "version=$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
-      
-      - name: Deploy to Production
-        uses: appleboy/ssh-action@master
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: DATABASE_URL
-          script: |
-            cd /app/myapp
-            
-            # Export database URL
-            export DATABASE_URL="$DATABASE_URL"
-            
-            # Deploy with migrations
-            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
-              --app-name=myapp \
-              --image-repo=ghcr.io/myorg/myapp \
-              --db-shadow-enabled=true
-```
-
 ## Using the Service Discovery Plugin
 
 This example demonstrates using the service discovery plugin:
@@ -322,11 +277,10 @@ This example demonstrates using the service discovery plugin:
   --green-port=8082 \
   --health-endpoint=/health \
   --service-registry-enabled=true \
-  --service-registry-url="http://registry:8080" \
   --service-auto-generate-urls=true
 ```
 
-### Multi-Service Discovery with External Registry
+### Multi-Service Discovery
 
 For applications with multiple services that need to discover each other:
 
@@ -339,8 +293,7 @@ For applications with multiple services that need to discover each other:
   --blue-port=8001 \
   --green-port=8002 \
   --health-endpoint=/health \
-  --service-registry-enabled=true \
-  --service-registry-url="http://registry.example.com"
+  --service-registry-enabled=true
 
 # Deploy second service
 ./scripts/bgd-deploy.sh v1.0.0 \
@@ -350,8 +303,7 @@ For applications with multiple services that need to discover each other:
   --blue-port=8011 \
   --green-port=8012 \
   --health-endpoint=/health \
-  --service-registry-enabled=true \
-  --service-registry-url="http://registry.example.com"
+  --service-registry-enabled=true
 ```
 
 ## Using the SSL Automation Plugin
@@ -388,54 +340,17 @@ For applications that need SSL for multiple domains:
   --green-port=8082 \
   --health-endpoint=/health \
   --domain-name="example.com" \
-  --alt-domains="www.example.com,api.example.com,admin.example.com" \
+  --ssl-domains="www.example.com,api.example.com,admin.example.com" \
   --certbot-email="admin@example.com" \
   --ssl-enabled=true
 ```
 
-### GitHub Actions Workflow with SSL Automation
+## Using the Notification Plugin
 
-```yaml
-name: Deploy with SSL
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set version
-        id: versioning
-        run: echo "version=$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
-      
-      - name: Deploy to Production
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            cd /app/myapp
-            
-            # Deploy with SSL
-            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
-              --app-name=myapp \
-              --image-repo=ghcr.io/myorg/myapp \
-              --domain-name="${{ secrets.DOMAIN_NAME }}" \
-              --certbot-email="${{ secrets.ADMIN_EMAIL }}" \
-              --ssl-enabled=true
-```
-
-## Using the Audit Logging Plugin
-
-This example demonstrates using the audit logging plugin with Slack notifications:
+This example demonstrates using the notification plugin:
 
 ```bash
-# Deploy with audit logging
+# Deploy with Telegram notifications
 ./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
@@ -443,224 +358,20 @@ This example demonstrates using the audit logging plugin with Slack notification
   --blue-port=8081 \
   --green-port=8082 \
   --health-endpoint=/health \
-  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
-  --audit-log-level="info"
-```
+  --notify-enabled=true \
+  --telegram-bot-token="your-token" \
+  --telegram-chat-id="your-chat-id"
 
-### Creating a Custom Notification Plugin
-
-You can create a custom notification plugin:
-
-```bash
-#!/bin/bash
-# plugins/bgd-teams-notification.sh
-
-# Register plugin arguments
-bgd_register_plugin_argument "teams-notification" "TEAMS_WEBHOOK" ""
-bgd_register_plugin_argument "teams-notification" "NOTIFY_CHANNEL" "Deployments"
-
-# Implement hooks
-bgd_hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
-  
-  if [ -n "${TEAMS_WEBHOOK:-}" ]; then
-    bgd_log_info "Sending deployment notification to Microsoft Teams"
-    
-    # Create JSON payload
-    local payload=$(cat << EOF
-{
-  "@type": "MessageCard",
-  "@context": "http://schema.org/extensions",
-  "themeColor": "0076D7",
-  "summary": "Deployment Notification",
-  "sections": [{
-    "activityTitle": "🚀 Deployment Successful",
-    "facts": [
-      { "name": "Application", "value": "${APP_NAME}" },
-      { "name": "Version", "value": "${version}" },
-      { "name": "Environment", "value": "${env_name}" },
-      { "name": "Time", "value": "$(date "+%Y-%m-%d %H:%M:%S")" }
-    ]
-  }]
-}
-EOF
-)
-    
-    # Send notification to Teams
-    curl -s -X POST -H "Content-Type: application/json" -d "$payload" "${TEAMS_WEBHOOK}"
-  fi
-  
-  return 0
-}
-
-bgd_hook_post_rollback() {
-  local rollback_env="$1"
-  
-  if [ -n "${TEAMS_WEBHOOK:-}" ]; then
-    bgd_log_info "Sending rollback notification to Microsoft Teams"
-    
-    # Create JSON payload
-    local payload=$(cat << EOF
-{
-  "@type": "MessageCard",
-  "@context": "http://schema.org/extensions",
-  "themeColor": "FF0000",
-  "summary": "Rollback Notification",
-  "sections": [{
-    "activityTitle": "⚠️ Rollback Performed",
-    "facts": [
-      { "name": "Application", "value": "${APP_NAME}" },
-      { "name": "Environment", "value": "${rollback_env}" },
-      { "name": "Time", "value": "$(date "+%Y-%m-%d %H:%M:%S")" }
-    ]
-  }]
-}
-EOF
-)
-    
-    # Send notification to Teams
-    curl -s -X POST -H "Content-Type: application/json" -d "$payload" "${TEAMS_WEBHOOK}"
-  fi
-  
-  return 0
-}
-```
-
-Then use it in your deployment:
-
-```bash
+# Deploy with Slack notifications
 ./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --image-repo=ghcr.io/myorg/myapp \
-  --teams-webhook="https://outlook.office.com/webhook/XXX" \
-  --notify-channel="Production"
-```
-
-## Custom Plugin Example
-
-This example demonstrates creating a custom plugin for performance monitoring:
-
-```bash
-#!/bin/bash
-# plugins/bgd-performance-monitor.sh
-
-# Register plugin arguments
-bgd_register_plugin_argument "performance-monitor" "MONITOR_ENABLED" "false"
-bgd_register_plugin_argument "performance-monitor" "MONITOR_ENDPOINT" ""
-bgd_register_plugin_argument "performance-monitor" "MONITOR_API_KEY" ""
-
-# Implement hooks
-bgd_hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
-  
-  if [ "$MONITOR_ENABLED" != "true" ] || [ -z "$MONITOR_ENDPOINT" ]; then
-    return 0
-  fi
-  
-  bgd_log_info "Registering deployment with performance monitor"
-  
-  # Create payload
-  local payload=$(cat << EOF
-{
-  "event": "deployment",
-  "app": "${APP_NAME}",
-  "version": "${version}",
-  "environment": "${env_name}",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-}
-EOF
-)
-  
-  # Send deployment event to monitoring service
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${MONITOR_API_KEY}" \
-    -d "$payload" \
-    "${MONITOR_ENDPOINT}/api/events"
-  
-  return $?
-}
-
-bgd_hook_post_cutover() {
-  local new_env="$1"
-  local old_env="$2"
-  
-  if [ "$MONITOR_ENABLED" != "true" ] || [ -z "$MONITOR_ENDPOINT" ]; then
-    return 0
-  fi
-  
-  bgd_log_info "Registering cutover with performance monitor"
-  
-  # Create payload
-  local payload=$(cat << EOF
-{
-  "event": "cutover",
-  "app": "${APP_NAME}",
-  "new_environment": "${new_env}",
-  "old_environment": "${old_env}",
-  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-}
-EOF
-)
-  
-  # Send cutover event to monitoring service
-  curl -s -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${MONITOR_API_KEY}" \
-    -d "$payload" \
-    "${MONITOR_ENDPOINT}/api/events"
-  
-  return $?
-}
-
-# Add a pre-cutover hook to check for performance degradation
-bgd_hook_pre_cutover() {
-  local new_env="$1"
-  local old_env="$2"
-  
-  if [ "$MONITOR_ENABLED" != "true" ] || [ -z "$MONITOR_ENDPOINT" ]; then
-    return 0
-  fi
-  
-  bgd_log_info "Checking performance metrics before cutover"
-  
-  # Query performance metrics API
-  local metrics=$(curl -s -X GET \
-    -H "Authorization: Bearer ${MONITOR_API_KEY}" \
-    "${MONITOR_ENDPOINT}/api/metrics?app=${APP_NAME}&environment=${new_env}&last=5m")
-  
-  # Check for any performance degradation
-  local error_rate=$(echo "$metrics" | jq -r '.error_rate')
-  local response_time=$(echo "$metrics" | jq -r '.avg_response_time')
-  
-  bgd_log_info "New environment metrics: Error rate: $error_rate%, Response time: ${response_time}ms"
-  
-  # If error rate is too high, abort cutover
-  if (( $(echo "$error_rate > 5.0" | bc -l) )); then
-    bgd_log_error "Error rate is too high ($error_rate%). Aborting cutover."
-    return 1
-  fi
-  
-  # If response time is too high, warn but continue
-  if (( $(echo "$response_time > 500" | bc -l) )); then
-    bgd_log_warning "Response time is high (${response_time}ms). Proceeding with caution."
-  fi
-  
-  return 0
-}
-```
-
-Then use it in your deployment:
-
-```bash
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --monitor-enabled=true \
-  --monitor-endpoint="https://monitor.example.com" \
-  --monitor-api-key="your-api-key"
+  --nginx-port=80 \
+  --blue-port=8081 \
+  --green-port=8082 \
+  --health-endpoint=/health \
+  --notify-enabled=true \
+  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ"
 ```
 
 ## Advanced Scenarios
@@ -687,10 +398,10 @@ This example demonstrates a complete multi-environment setup with all plugins en
   --ssl-enabled=true \
   --db-shadow-enabled=true \
   --service-registry-enabled=true \
+  --notify-enabled=true \
   --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
-  --monitor-enabled=true \
-  --monitor-endpoint="https://monitor.example.com" \
-  --monitor-api-key="your-api-key"
+  --auto-port-assignment \
+  --auto-rollback
 ```
 
 ### Hybrid Frontend/Backend Deployment

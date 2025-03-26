@@ -1,125 +1,155 @@
 #!/bin/bash
 #
-# bgd-deploy.sh - Enhanced deployment script with multi-container support
+# bgd-deploy.sh - Main deployment script for Blue/Green Deployment toolkit
 #
 # Usage:
-#   ./deploy.sh VERSION [OPTIONS]
+#   ./bgd-deploy.sh VERSION [OPTIONS]
 #
-# Arguments:
+# Required Arguments:
 #   VERSION                Version identifier for the deployment
-#
-# Options:
-#   --app-name=NAME           Application name (default: app)
-#   --image-repo=REPO         Docker image repository
-#   --frontend-image-repo=REPO Frontend image repository
-#   --frontend-version=VER    Frontend version (defaults to same as backend VERSION)
-#   --domain-name=DOMAIN      Domain name for multi-domain routing
-#   --nginx-port=PORT         Nginx HTTP port (default: 80)
-#   --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
-#   --blue-port=PORT          Blue environment port (default: 8081)
-#   --green-port=PORT         Green environment port (default: 8082)
-#   --health-endpoint=PATH    Health check endpoint (default: /health)
-#   --health-retries=N        Number of health check retries (default: 12)
-#   --health-delay=SEC        Delay between health checks (default: 5)
-#   --timeout=SEC             Timeout for each request (default: 5)
-#   --database-url=URL        Database connection string
-#   --redis-url=URL           Redis connection string
-#   --api-key=KEY             API key
-#   --setup-shared            Initialize shared services (first deployment)
-#   --skip-migrations         Skip database migrations
-#   --migrations-cmd=CMD      Custom migrations command (default: npm run migrate)
-#   --force                   Force deployment even if target environment is active
-#   --no-shift                Don't shift traffic automatically (manual cutover)
 
 set -euo pipefail
 
-# Get script directory
+# Get script directory and load core module
 BGD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source utility functions
 source "$BGD_SCRIPT_DIR/bgd-core.sh"
 
-# Main deploy function
+# Display help information
+bgd_show_help() {
+  cat << EOL
+=================================================================
+Blue/Green Deployment System - Deploy Script
+=================================================================
+
+USAGE:
+  ./bgd-deploy.sh VERSION [OPTIONS]
+
+ARGUMENTS:
+  VERSION                   Version identifier for the deployment (REQUIRED)
+
+REQUIRED OPTIONS:
+  --app-name=NAME           Application name
+  --image-repo=REPO         Docker image repository
+
+PORT OPTIONS:
+  --nginx-port=PORT         Nginx HTTP port (default: 80)
+  --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
+  --blue-port=PORT          Blue environment port (default: 8081)
+  --green-port=PORT         Green environment port (default: 8082)
+  --auto-port-assignment    Automatically assign available ports
+
+HEALTH CHECK OPTIONS:
+  --health-endpoint=PATH    Health check endpoint (default: /health)
+  --health-retries=N        Number of health check retries (default: 12)
+  --health-delay=SEC        Delay between health checks (default: 5)
+  --timeout=SEC             Timeout for health check requests (default: 5)
+  --collect-logs            Collect container logs on health check failure
+  --max-log-lines=N         Maximum number of log lines to collect (default: 100)
+  --retry-backoff           Use exponential backoff for health check retries
+
+DEPLOYMENT OPTIONS:
+  --domain-name=DOMAIN      Domain name for multi-domain routing
+  --frontend-image-repo=REPO Frontend image repository
+  --frontend-version=VER    Frontend version (defaults to same as VERSION)
+  --setup-shared            Initialize shared services (database, cache, etc.)
+  --skip-migrations         Skip database migrations
+  --migrations-cmd=CMD      Custom migrations command
+  --force                   Force deployment even if target environment is active
+  --no-shift                Don't shift traffic automatically
+
+ADVANCED OPTIONS:
+  --auto-rollback           Automatically roll back failed deployments
+  --notify-enabled          Enable notifications
+  --telegram-bot-token=TOK  Telegram bot token for notifications
+  --telegram-chat-id=ID     Telegram chat ID for notifications
+  --slack-webhook=URL       Slack webhook URL for notifications
+
+EXAMPLES:
+  # Basic deployment
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
+  
+  # Deploy with automatic port assignment and rollback
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --auto-port-assignment --auto-rollback
+  
+  # Deploy with notifications
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --notify-enabled --telegram-bot-token=TOKEN --telegram-chat-id=ID
+
+=================================================================
+EOL
+}
+
+# Main deployment function
 bgd_deploy() {
-  # Parse arguments
-  if [ $# -lt 1 ]; then
-    bgd_log_error "Missing version parameter"
-    echo "Usage: $0 VERSION [OPTIONS]"
-    return 1
+  # Check for help flag first
+  if [[ "$1" == "--help" ]]; then
+    bgd_show_help
+    return 0
   fi
 
-  VERSION="$1"
-  shift
-
   # Parse command-line parameters
-  bgd_parse_parameters "$@" || {
-    bgd_log_error "Invalid parameters"
-    return 1
-  }
+  bgd_parse_parameters "$@"
+  
+  # Additional validation for required parameters
+  for param in "APP_NAME" "VERSION" "IMAGE_REPO"; do
+    if [ -z "${!param:-}" ]; then
+      bgd_handle_error "missing_parameter" "$param"
+      return 1
+    fi
+  done
 
-  # Set additional defaults
-  FRONTEND_VERSION=${FRONTEND_VERSION:-$VERSION}
-  DOMAIN_NAME=${DOMAIN_NAME:-example.com}
-  NGINX_SSL_PORT=${NGINX_SSL_PORT:-443}
-  SETUP_SHARED=${SETUP_SHARED:-false}
-  SKIP_MIGRATIONS=${SKIP_MIGRATIONS:-false}
-  MIGRATIONS_CMD=${MIGRATIONS_CMD:-"npm run migrate"}
+  bgd_log "Starting deployment of version $VERSION for $APP_NAME" "info"
+  bgd_log_deployment_event "$VERSION" "deployment_started" "starting"
 
-  bgd_log_info "Starting deployment of version $VERSION for $APP_NAME"
-  bgd_log_deployment_step "$VERSION" "deployment_started" "started"
+  # Automatically assign ports if enabled
+  bgd_manage_ports
 
-  # Run pre-deployment hook
-  bgd_run_hook "pre_deploy" "$VERSION" "$APP_NAME" || {
-    bgd_log_error "Pre-deployment hook failed"
-    bgd_log_deployment_step "$VERSION" "deployment_failed" "pre_deploy_hook_failed"
-    return 1
-  }
+  # Determine which environment to deploy to (blue or green)
+  read CURRENT_ENV TARGET_ENV <<< $(bgd_get_environments)
+  bgd_log "Current environment: $CURRENT_ENV, deploying to: $TARGET_ENV" "info"
 
-  # Ensure Docker is running
-  bgd_ensure_docker_running || {
-    bgd_log_error "Docker is not running. Please start Docker and try again."
-    bgd_log_deployment_step "$VERSION" "deployment_failed" "docker_not_running"
-    return 1
-  }
+  # Export TARGET_ENV so it's available for hooks and traffic shifting
+  export TARGET_ENV
 
-  # Get Docker Compose command
+  # Set port based on target environment
+  TARGET_PORT=$([[ "$TARGET_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
+
+  # Check if target environment is already running
   DOCKER_COMPOSE=$(bgd_get_docker_compose_cmd)
+  if $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" ps 2>/dev/null | grep -q "Up"; then
+    if [ "${FORCE:-false}" = "true" ]; then
+      bgd_log "Target environment $TARGET_ENV is already running, stopping it first..." "warning"
+      $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" down
+    else
+      bgd_handle_error "environment_start_failed" "Target environment $TARGET_ENV is already running. Use --force to override."
+      return 1
+    fi
+  fi
 
   # Initialize shared services if requested
-  if [ "$SETUP_SHARED" = true ]; then
-    bgd_log_info "Setting up shared services (database, redis, etc.)"
+  if [ "${SETUP_SHARED:-false}" = "true" ]; then
+    bgd_log "Setting up shared services (database, redis, etc.)" "info"
     
     # Create shared network if it doesn't exist
-    if ! docker network inspect ${APP_NAME}-shared-network &>/dev/null; then
-      bgd_log_info "Creating shared network: ${APP_NAME}-shared-network"
-      docker network create ${APP_NAME}-shared-network
-      export SHARED_NETWORK_EXISTS=true
+    if ! docker network inspect "${APP_NAME}-shared-network" &>/dev/null; then
+      bgd_log "Creating shared network: ${APP_NAME}-shared-network" "info"
+      docker network create "${APP_NAME}-shared-network" || bgd_handle_error "network_error" "Failed to create shared network"
     else
-      bgd_log_info "Shared network already exists"
-      export SHARED_NETWORK_EXISTS=true
+      bgd_log "Shared network already exists" "info"
     fi
     
     # Create shared volumes if they don't exist
-    if ! docker volume inspect ${APP_NAME}-db-data &>/dev/null; then
-      bgd_log_info "Creating database volume: ${APP_NAME}-db-data"
-      docker volume create ${APP_NAME}-db-data
-      export DB_DATA_EXISTS=true
-    else
-      bgd_log_info "Database volume already exists"
-      export DB_DATA_EXISTS=true
+    if ! docker volume inspect "${APP_NAME}-db-data" &>/dev/null; then
+      bgd_log "Creating database volume: ${APP_NAME}-db-data" "info"
+      docker volume create "${APP_NAME}-db-data" || bgd_handle_error "docker_error" "Failed to create database volume"
     fi
     
-    if ! docker volume inspect ${APP_NAME}-redis-data &>/dev/null; then
-      bgd_log_info "Creating Redis volume: ${APP_NAME}-redis-data"
-      docker volume create ${APP_NAME}-redis-data
-      export REDIS_DATA_EXISTS=true
-    else
-      bgd_log_info "Redis volume already exists"
-      export REDIS_DATA_EXISTS=true
+    if ! docker volume inspect "${APP_NAME}-redis-data" &>/dev/null; then
+      bgd_log "Creating Redis volume: ${APP_NAME}-redis-data" "info"
+      docker volume create "${APP_NAME}-redis-data" || bgd_handle_error "docker_error" "Failed to create Redis volume"
     fi
     
     # Start shared services
-    bgd_log_info "Starting shared services (database, redis)"
+    bgd_log "Starting shared services" "info"
     
     # Create temporary compose file for shared services
     cat > "docker-compose.shared.yml" << EOL
@@ -147,77 +177,31 @@ volumes:
     name: ${APP_NAME}-redis-data
 EOL
     
-    $DOCKER_COMPOSE -f docker-compose.yml -f docker-compose.shared.yml --profile shared up -d db redis
+    $DOCKER_COMPOSE -f docker-compose.yml -f docker-compose.shared.yml --profile shared up -d || 
+      bgd_handle_error "environment_start_failed" "Failed to start shared services"
     
-    if [ $? -ne 0 ]; then
-      bgd_log_error "Failed to start shared services"
-      bgd_log_deployment_step "$VERSION" "deployment_failed" "shared_services_start_failed"
-      return 1
-    fi
-    
-    bgd_log_info "Waiting for shared services to be healthy..."
-    sleep 10
-    
-    # Check if shared services are healthy
-    if ! docker ps --filter "name=${APP_NAME}-shared" --format "{{.Status}}" | grep -q "healthy"; then
-      bgd_log_warning "Some shared services may not be fully healthy yet. Proceeding with caution..."
-    else
-      bgd_log_success "Shared services are healthy"
-    fi
+    bgd_log "Shared services started successfully" "success"
+    sleep 5  # Allow services to initialize
   fi
 
-  # Determine which environment to deploy to (blue or green)
-  read CURRENT_ENV TARGET_ENV <<< $(bgd_get_environments)
-  bgd_log_info "Current environment: $CURRENT_ENV, deploying to: $TARGET_ENV"
-
-  # Export TARGET_ENV so it's available for hooks and traffic shifting
-  export TARGET_ENV
-
-  CURRENT_PORT=$([[ "$CURRENT_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
-  TARGET_PORT=$([[ "$TARGET_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
-
-  # Check if target environment is already active
-  if $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV ps 2>/dev/null | grep -q "Up"; then
-    if [ "$FORCE_FLAG" = true ]; then
-      bgd_log_warning "Target environment $TARGET_ENV is already running, but --force is specified. Stopping it first..."
-      $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV down
-    else
-      bgd_log_error "Target environment $TARGET_ENV is already running. Use --force to override."
-      bgd_log_deployment_step "$VERSION" "deployment_failed" "target_env_running"
-      return 1
-    fi
-  fi
-
-  # Create environment file for target deployment
-  bgd_create_env_file "$TARGET_ENV" "$TARGET_PORT"
-
-  # Add additional variables to environment file
-  cat >> ".env.${TARGET_ENV}" << EOL
-# Multi-container configuration
-FRONTEND_VERSION=${FRONTEND_VERSION}
-FRONTEND_IMAGE_REPO=${FRONTEND_IMAGE_REPO:-ghcr.io/example/frontend}
-DOMAIN_NAME=${DOMAIN_NAME}
-NGINX_SSL_PORT=${NGINX_SSL_PORT}
-SHARED_NETWORK_EXISTS=true
-DB_DATA_EXISTS=true
-REDIS_DATA_EXISTS=true
-EOL
+  # Create secure environment file for the target environment
+  bgd_create_secure_env_file "$TARGET_ENV" "$TARGET_PORT"
 
   # Generate environment-specific docker-compose overrides
-  TEMPLATE_DIR="${BGD_SCRIPT_DIR}/../config/templates"
-  DOCKER_COMPOSE_TEMPLATE="${TEMPLATE_DIR}/docker-compose.override.template"
+  bgd_log "Generating Docker Compose override for $TARGET_ENV environment" "info"
+  DOCKER_COMPOSE_TEMPLATE="${BGD_TEMPLATES_DIR}/docker-compose.override.template"
   DOCKER_COMPOSE_OVERRIDE="docker-compose.${TARGET_ENV}.yml"
 
   if [ -f "$DOCKER_COMPOSE_TEMPLATE" ]; then
+    # Use template if available
     cat "$DOCKER_COMPOSE_TEMPLATE" | \
       sed -e "s/{{ENV_NAME}}/$TARGET_ENV/g" | \
       sed -e "s/{{PORT}}/$TARGET_PORT/g" > "$DOCKER_COMPOSE_OVERRIDE"
-    bgd_log_info "Generated docker-compose override for $TARGET_ENV environment"
   else
-    bgd_log_warning "Docker Compose template not found at $DOCKER_COMPOSE_TEMPLATE. Using default configuration."
-    # Create a minimal override
+    # Create a minimal override if template not found
+    bgd_log "Docker Compose template not found, creating minimal override" "warning"
     cat > "$DOCKER_COMPOSE_OVERRIDE" << EOL
-# Auto-generated environment-specific overrides for $TARGET_ENV environment
+# Generated environment-specific overrides for $TARGET_ENV environment
 version: '3.8'
 
 services:
@@ -231,130 +215,173 @@ services:
 
   nginx:
     container_name: ${APP_NAME}-nginx-${TARGET_ENV}
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
 EOL
   fi
 
-  # Generate initial nginx.conf file for multi-domain routing
-  NGINX_TEMPLATE="${TEMPLATE_DIR}/nginx-multi-domain.conf.template"
-  if [ -f "$NGINX_TEMPLATE" ]; then
-    bgd_log_info "Generating initial nginx configuration for multi-domain routing..."
+  # Generate initial nginx configuration
+  bgd_log "Generating Nginx configuration" "info"
+  NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-multi-domain.conf.template"
+  if [ ! -f "$NGINX_TEMPLATE" ]; then
+    NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
+  fi
+  
+  if [ ! -f "$NGINX_TEMPLATE" ]; then
+    bgd_handle_error "file_not_found" "Nginx template file not found in templates directory"
+    return 1
+  fi
+  
+  # Set initial traffic weights
+  if [ "$CURRENT_ENV" = "blue" ]; then
+    # Blue is active, green gets no traffic initially
+    BLUE_WEIGHT_VALUE=10
+    GREEN_WEIGHT_VALUE=0
+  else
+    # Green is active, blue gets no traffic initially
+    BLUE_WEIGHT_VALUE=0
+    GREEN_WEIGHT_VALUE=10
+  fi
+  
+  cat "$NGINX_TEMPLATE" | \
+    sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
+    sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
+    sed -e "s/APP_NAME/$APP_NAME/g" | \
+    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+
+  # Create directory for SSL certificates if it doesn't exist
+  bgd_ensure_directory "certs"
+
+  # Start the new environment
+  bgd_log "Starting $TARGET_ENV environment with version $VERSION" "info"
+  $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" --env-file ".env.${TARGET_ENV}" \
+    -f docker-compose.yml -f "$DOCKER_COMPOSE_OVERRIDE" up -d || 
+    bgd_handle_error "environment_start_failed" "Failed to start $TARGET_ENV environment"
+
+  bgd_log "Environment started successfully" "success"
+  bgd_log_deployment_event "$VERSION" "environment_started" "success"
+
+  # Run database migrations if enabled
+  if [ "${SKIP_MIGRATIONS:-false}" != "true" ]; then
+    bgd_log "Running database migrations" "info"
     
+    # Default migration command if not specified
+    local migrations_cmd="${MIGRATIONS_CMD:-npm run migrate}"
+    
+    # Execute migrations within the container
+    $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" exec -T app sh -c "$migrations_cmd" || 
+      bgd_handle_error "database_error" "Database migrations failed"
+    
+    bgd_log "Database migrations completed successfully" "success"
+  else
+    bgd_log "Skipping database migrations as requested" "info"
+  fi
+
+  # Verify environment health
+  bgd_log "Verifying $TARGET_ENV environment health" "info"
+  
+  # Check application health endpoint
+  HEALTH_URL="http://localhost:${TARGET_PORT}${HEALTH_ENDPOINT}"
+  if ! bgd_check_health "$HEALTH_URL" "$HEALTH_RETRIES" "$HEALTH_DELAY" "$TIMEOUT"; then
+    $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" logs --tail="${MAX_LOG_LINES:-100}"
+    bgd_handle_error "health_check_failed" "Application health check failed for $TARGET_ENV environment"
+    return 1
+  fi
+  
+  # Verify all services in the environment
+  if ! bgd_verify_environment_health "$TARGET_ENV"; then
+    bgd_handle_error "health_check_failed" "Not all services are healthy in $TARGET_ENV environment"
+    return 1
+  fi
+  
+  bgd_log_deployment_event "$VERSION" "health_check_passed" "success"
+
+  # Gradually shift traffic if auto-shift is enabled
+  if [ "${NO_SHIFT:-false}" != "true" ]; then
+    bgd_log "Gradually shifting traffic to $TARGET_ENV environment" "info"
+    
+    # Traffic shift step 1: 90/10 split
     if [ "$CURRENT_ENV" = "blue" ]; then
-      # Blue is active, so it gets weight 10, green gets 0
-      BLUE_WEIGHT_VALUE=10
-      GREEN_WEIGHT_VALUE=0
+      # Blue is active, shift 10% to green
+      BLUE_WEIGHT_VALUE=9
+      GREEN_WEIGHT_VALUE=1
     else
-      # Green is active, so it gets weight 10, blue gets 0
-      BLUE_WEIGHT_VALUE=0
-      GREEN_WEIGHT_VALUE=10
+      # Green is active, shift 10% to blue
+      BLUE_WEIGHT_VALUE=1
+      GREEN_WEIGHT_VALUE=9
     fi
     
     cat "$NGINX_TEMPLATE" | \
       sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
       sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
       sed -e "s/APP_NAME/$APP_NAME/g" | \
-      sed -e "s/DOMAIN_NAME/$DOMAIN_NAME/g" | \
+      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
       sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
       sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
-  else
-    bgd_log_error "Nginx template file not found at $NGINX_TEMPLATE"
-    bgd_log_deployment_step "$VERSION" "deployment_failed" "nginx_template_missing"
-    return 1
-  fi
-
-  # Create directory for SSL certificates if it doesn't exist
-  bgd_ensure_directory "certs"
-
-  # Start the new environment
-  bgd_log_info "Starting $TARGET_ENV environment with version $VERSION..."
-  $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV --env-file .env.${TARGET_ENV} \
-    -f docker-compose.yml -f "docker-compose.${TARGET_ENV}.yml" up -d
-
-  if [ $? -ne 0 ]; then
-    bgd_log_error "Failed to start $TARGET_ENV environment"
-    bgd_log_deployment_step "$VERSION" "deployment_failed" "environment_start_failed"
-    return 1
-  fi
-
-  bgd_log_info "Environment started successfully"
-  bgd_log_deployment_step "$VERSION" "environment_started" "success"
-
-  # Run database migrations if needed
-  if [ "$SKIP_MIGRATIONS" = false ]; then
-    bgd_log_info "Running database migrations..."
     
-    # Execute migrations within the container
-    $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV exec -T app sh -c "$MIGRATIONS_CMD" || {
-      bgd_log_error "Database migrations failed"
-      bgd_log_deployment_step "$VERSION" "deployment_failed" "migrations_failed"
-      return 1
-    }
-    
-    bgd_log_success "Database migrations completed successfully"
-  else
-    bgd_log_info "Skipping database migrations as requested"
-  fi
-
-  # Wait for the new environment to be healthy
-  bgd_log_info "Waiting for $TARGET_ENV environment to be healthy..."
-  HEALTH_URL="http://localhost:${TARGET_PORT}${HEALTH_ENDPOINT}"
-  if ! bgd_check_health "$HEALTH_URL" "$HEALTH_RETRIES" "$HEALTH_DELAY"; then
-    bgd_log_error "New environment failed health checks. Deployment failed."
-    $DOCKER_COMPOSE -p ${APP_NAME}-$TARGET_ENV logs
-    bgd_log_deployment_step "$VERSION" "deployment_failed" "health_check_failed"
-    return 1
-  fi
-
-  bgd_log_deployment_step "$VERSION" "health_check_passed" "success"
-
-  # Run post-health hook
-  bgd_run_hook "post_health" "$VERSION" "$TARGET_ENV" || {
-    bgd_log_error "Post-health hook failed"
-    bgd_log_deployment_step "$VERSION" "deployment_warning" "post_health_hook_failed"
-    # Continue despite warning
-  }
-
-  # If auto-shift is enabled, update traffic routing
-  if [ "$NO_SHIFT" != true ]; then
-    bgd_log_info "Gradually shifting traffic to $TARGET_ENV environment..."
-    
-    # Create a dual environment nginx config with initially 90/10 traffic split
-    if [ "$CURRENT_ENV" = "blue" ]; then
-      # Blue is active, shift 10% to green
-      bgd_update_traffic_distribution 9 1 "$NGINX_TEMPLATE" "nginx.conf"
-    else
-      # Green is active, shift 10% to blue
-      bgd_update_traffic_distribution 1 9 "$NGINX_TEMPLATE" "nginx.conf"
-    fi
+    # Restart nginx to apply configuration
+    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
-    # Update to 50/50 split
-    bgd_update_traffic_distribution 5 5 "$NGINX_TEMPLATE" "nginx.conf"
+    # Traffic shift step 2: 50/50 split
+    BLUE_WEIGHT_VALUE=5
+    GREEN_WEIGHT_VALUE=5
+    
+    cat "$NGINX_TEMPLATE" | \
+      sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
+      sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
+      sed -e "s/APP_NAME/$APP_NAME/g" | \
+      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+    
+    # Restart nginx to apply configuration
+    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
-    # Final update to 10/90 split favoring new environment
+    # Traffic shift step 3: 10/90 split favoring new environment
     if [ "$CURRENT_ENV" = "blue" ]; then
-      bgd_update_traffic_distribution 1 9 "$NGINX_TEMPLATE" "nginx.conf"
+      # Blue is active, shift 90% to green
+      BLUE_WEIGHT_VALUE=1
+      GREEN_WEIGHT_VALUE=9
     else
-      bgd_update_traffic_distribution 9 1 "$NGINX_TEMPLATE" "nginx.conf"
+      # Green is active, shift 90% to blue
+      BLUE_WEIGHT_VALUE=9
+      GREEN_WEIGHT_VALUE=1
     fi
     
-    bgd_log_success "Traffic gradually shifted to new $TARGET_ENV environment"
-    bgd_log_info "Run '${BGD_SCRIPT_DIR}/bgd-cutover.sh $TARGET_ENV --app-name=$APP_NAME' to complete the deployment"
+    cat "$NGINX_TEMPLATE" | \
+      sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
+      sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
+      sed -e "s/APP_NAME/$APP_NAME/g" | \
+      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+    
+    # Restart nginx to apply configuration
+    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
+    
+    bgd_log "Traffic gradually shifted to new $TARGET_ENV environment" "success"
+    bgd_log "Run './scripts/bgd-cutover.sh $TARGET_ENV --app-name=$APP_NAME' to complete the cutover" "info"
   else
-    bgd_log_info "Automatic traffic shifting is disabled"
-    bgd_log_info "Run '${BGD_SCRIPT_DIR}/bgd-cutover.sh $TARGET_ENV --app-name=$APP_NAME' when ready to shift traffic"
+    bgd_log "Automatic traffic shifting is disabled" "info"
+    bgd_log "Run './scripts/bgd-cutover.sh $TARGET_ENV --app-name=$APP_NAME' when ready to shift traffic" "info"
   fi
+
+  # Send notification if enabled
+  if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
+    bgd_send_notification "Deployment of version $VERSION to $TARGET_ENV environment completed successfully" "success"
+  fi
+
+  bgd_log_deployment_event "$VERSION" "deployment_completed" "success"
+  bgd_log "Deployment of version $VERSION to $TARGET_ENV environment completed successfully" "success"
   
-  # Run post-deployment hook
-  bgd_run_hook "post_deploy" "$VERSION" "$TARGET_ENV" || {
-    bgd_log_error "Post-deployment hook failed"
-    bgd_log_deployment_step "$VERSION" "deployment_warning" "post_deploy_hook_failed"
-    # Continue despite warning
-  }
-
-  bgd_log_deployment_step "$VERSION" "deployment_completed" "success"
-  bgd_log_success "Deployment of version $VERSION to $TARGET_ENV environment completed successfully!"
   return 0
 }
 

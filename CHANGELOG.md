@@ -1,149 +1,56 @@
 # Changelog
 
-## v2.0.0 (2025-03-23)
+All notable changes to the Blue/Green Deployment toolkit will be documented in this file.
 
-### Major Enhancements
+## [1.0.0] - 2025-03-26
 
-- **Namespace Management**: Complete refactoring to use proper namespacing
-  - All internal functions prefixed with `bgd_` to avoid conflicts
-  - All core files prefixed with `bgd-` (e.g., `bgd-core.sh`)
-  - **Removed backward compatibility wrapper scripts**
-  - Plugin system namespacing for extensibility
+### Initial Release
 
-- **Plugin System**: Complete overhaul of the plugin architecture with argument registration
-  - New hook system for extending deployment process
-  - Plugin argument registration mechanism
-  - Automatic environment variable propagation for plugins
+- **Core Framework**
+  - Zero-downtime deployment system with blue/green environment management
+  - Gradual traffic shifting with configurable weights (10%, 50%, 90%)
+  - Comprehensive health checking with automatic diagnostics
+  - Automatic port management with conflict resolution
+  - Environment-specific configuration and resource isolation
+  - Shared service support for stateful components (databases, caches)
+  - Automatic rollback capabilities
 
-- **Multi-Container Support**: Enhanced architecture for complex applications
-  - Support for deploying multiple containers per environment
-  - Separation of stateless and stateful services
-  - Shared network and volume management
-  - Improved docker-compose template handling
+- **Plugin System**
+  - Database migrations with zero-downtime shadow database approach
+  - Service discovery and registry for multi-service architectures
+  - SSL automation with Let's Encrypt integration
+  - Audit logging with structured event recording
+  - Notification system with Telegram and Slack integration
 
-- **Domain-Based Routing**: Advanced traffic routing capabilities
-  - Support for multiple domains and subdomains
-  - Domain-specific service routing
-  - Integrated SSL certificates for all domains
+- **Configuration Management**
+  - Multi-domain routing with environment-based traffic control
+  - Docker Compose template management
+  - Environment-specific variable handling with secure storage
+  - Automatic port assignment and conflict resolution
 
-- **Database Migration Strategies**: Zero-downtime database handling
-  - Shadow database approach for zero-downtime migrations
-  - Comprehensive backup and restore capabilities
-  - Migration history tracking
-  - Framework-specific migration adapters
-
-- **Service Discovery**: Automatic service registration
-  - Local and external service registry integration
-  - Dynamic service URL generation
-  - Automatic Nginx configuration updates
-  - Inter-service communication management
-
-- **SSL Automation**: Completely rebuilt SSL certificate handling
-  - DNS-based verification replaces HTTP verification 
-  - Multiple DNS provider support (GoDaddy, Namecheap) with easy extensibility
-  - Automatic detection and reconfiguration of existing certificates
-  - Let's Encrypt integration with improved reliability
-  - Automatic certificate renewal with proper credentials management
-  - Multi-domain certificate support
-  - Seamless CI/CD integration with secure API key handling
-  - ACME challenge configuration
-
-- **Audit Logging**: Comprehensive deployment tracking
-  - Structured logging with timestamps
-  - Integration with monitoring systems
-  - Customizable notification options
+- **Tools and Utilities**
+  - Deployment health verification
+  - Resource cleanup and management
   - Deployment history tracking
+  - Service status monitoring
+  - Environment cutover management
 
-### New Scripts
+- **Security Features**
+  - Secure credential storage
+  - Environment variable sanitization
+  - SSL certificate automation
+  - Sensitive data masking in logs
 
-- **health-check.sh**: Standalone utility for checking service health
-  - Flexible endpoint verification
-  - Custom retry and delay settings
-  - Enhanced output and error handling
+- **Documentation**
+  - Comprehensive documentation with examples
+  - Plugin usage guidelines
+  - Troubleshooting guide
+  - Integration examples for CI/CD pipelines
 
-### Enhanced Scripts
+### Technical Notes
 
-- **common.sh**: Core utilities and plugin management
-  - Added plugin registration system
-  - Improved parameter parsing
-  - Enhanced environment variable handling
-  - Expanded helper functions
-
-- **deploy.sh**: Primary deployment workflow
-  - Support for multi-container deployments
-  - Integration with all plugins
-  - Improved error handling
-  - Enhanced traffic shifting
-
-- **cutover.sh**: Traffic transition management
-  - Support for keeping old environments
-  - Health verification before cutover
-  - Multi-domain support
-
-- **rollback.sh**: Recovery and rollback capabilities
-  - Enhanced database rollback
-  - Improved service restoration
-  - Plugin integration for notifications
-
-- **cleanup.sh**: Deployment cleanup utilities
-  - More flexible cleanup options
-  - Better docker resource management
-  - Improved cleanup reporting
-
-### New Plugins
-
-- **db-migrations.sh**: Database migration management
-  - Schema and full database backups
-  - Migration history tracking
-  - Shadow database zero-downtime migrations
-  - Framework-specific adapters
-  - Rollback capabilities
-
-- **service-discovery.sh**: Service registration
-  - Automatic service registration
-  - Service URL generation
-  - Nginx configuration updates
-  - External registry integration
-
-- **ssl-automation.sh**: Completely redesigned SSL management
-  - DNS-based verification for more reliable certificate issuance
-  - Support for multiple DNS providers (GoDaddy, Namecheap)
-  - Automatic detection and reconfiguration of existing certificates
-  - Enhanced renewal management
-  - API-based automation for CI/CD environments
-  - Multi-domain support
-  - Improved error handling and recovery
-
-- **audit-logging.sh**: Deployment tracking
-  - Structured event logging
-  - Monitoring system integration
-  - Notification capabilities
-  - History tracking
-
-### Documentation
-
-- Complete overhaul of the README.md
-- Added comprehensive plugin documentation
-- Added multi-container configuration examples
-- Added domain-based routing examples
-- Added troubleshooting guides
-- Enhanced security documentation
-- New usage examples for all features
-
-### Bugfixes
-
-- Fixed issue with environment variable propagation
-- Improved handling of failed health checks
-- Enhanced error recovery during deployments
-- Fixed race conditions in traffic shifting
-- Improved cleanup of orphaned containers
-- Enhanced SSL certificate validation
-- Fixed "chicken-and-egg" problem with SSL verification requiring a running webserver
-
-### Breaking Changes
-
-- Plugin system now requires explicit registration of custom arguments
-- Default service name expected in docker-compose.yml is now `app`
-- Stateful services must be marked with `bgd.role=persistent` label
-- SSL certificate directory structure has changed
-- SSL automation now requires DNS provider API credentials for fully automated operation
+- Designed for modern containerized applications
+- Compatible with Docker and Docker Compose
+- Seamless integration with CI/CD platforms
+- Language and framework agnostic deployment process
+- Support for monorepo and multi-service architectures

@@ -30,6 +30,8 @@ mkdir -p "config/templates"
 mkdir -p "plugins"
 mkdir -p "logs"
 mkdir -p "certs"
+mkdir -p "credentials"
+mkdir -p "docs"
 
 # Define current script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,6 +99,38 @@ else
   echo "No plugins directory found, skipping plugin installation."
   mkdir -p "plugins"
 fi
+
+# Create .gitignore file
+echo "Creating .gitignore file..."
+cat > ".gitignore" << EOL
+# Blue/Green Deployment specific
+logs/
+certs/
+credentials/
+*.log
+service-registry.json
+.env.*
+renew-ssl.sh
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Temporary files
+*.swp
+*.swo
+.DS_Store
+tmp/
+EOL
 
 echo
 echo "✅ Installation completed successfully!"

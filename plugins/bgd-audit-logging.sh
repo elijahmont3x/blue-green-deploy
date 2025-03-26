@@ -5,18 +5,13 @@
 # This plugin provides comprehensive deployment event tracking:
 # - Records deployment events with timestamps
 # - Captures environment details
-# - Integrates with external monitoring systems
-# - Provides detailed logging and reporting
-#
-# Place this file in the plugins/ directory to automatically activate it.
+# - Provides deployment history
 
 # Register plugin arguments
 bgd_register_audit_logging_arguments() {
   bgd_register_plugin_argument "audit-logging" "AUDIT_LOG_LEVEL" "info"
   bgd_register_plugin_argument "audit-logging" "AUDIT_LOG_FILE" "audit.log"
   bgd_register_plugin_argument "audit-logging" "AUDIT_RETENTION_DAYS" "90"
-  bgd_register_plugin_argument "audit-logging" "AUDIT_METRICS_ENABLED" "false"
-  bgd_register_plugin_argument "audit-logging" "AUDIT_METRICS_URL" ""
 }
 
 # Log an audit event
@@ -49,30 +44,30 @@ bgd_audit_log() {
   # Create log file if it doesn't exist
   local log_file="${AUDIT_LOG_FILE:-audit.log}"
   touch "$log_file" 2>/dev/null || {
-    bgd_log_warning "Unable to write to audit log file: $log_file"
+    bgd_log "Unable to write to audit log file: $log_file" "warning"
     return 1
   }
   
-  # Create event JSON
-  local json_event=$(jq -n \
-    --arg timestamp "$timestamp" \
-    --arg app "$APP_NAME" \
-    --arg version "${VERSION:-unknown}" \
-    --arg event "$event" \
-    --arg severity "$severity" \
-    --argjson details "$details" \
-    '{"timestamp": $timestamp, "app": $app, "version": $version, "event": $event, "severity": $severity, "details": $details}')
+  # Create event entry
+  local json_event=""
+  
+  if command -v jq &> /dev/null; then
+    # Use jq if available
+    json_event=$(jq -n \
+      --arg timestamp "$timestamp" \
+      --arg app "$APP_NAME" \
+      --arg version "${VERSION:-unknown}" \
+      --arg event "$event" \
+      --arg severity "$severity" \
+      --argjson details "$details" \
+      '{"timestamp": $timestamp, "app": $app, "version": $version, "event": $event, "severity": $severity, "details": $details}')
+  else
+    # Fallback to simple JSON if jq is not available
+    json_event="{\"timestamp\":\"$timestamp\",\"app\":\"$APP_NAME\",\"version\":\"${VERSION:-unknown}\",\"event\":\"$event\",\"severity\":\"$severity\",\"details\":$details}"
+  fi
   
   # Write to log file
   echo "$json_event" >> "$log_file"
-  
-  # If metrics enabled, send to metrics endpoint
-  if [ "${AUDIT_METRICS_ENABLED:-false}" = "true" ] && [ -n "${AUDIT_METRICS_URL:-}" ]; then
-    curl -s -X POST -H "Content-Type: application/json" \
-      -d "$json_event" "${AUDIT_METRICS_URL}/events" &>/dev/null || {
-      bgd_log_warning "Failed to send audit event to metrics endpoint"
-    }
-  fi
   
   return 0
 }
@@ -82,13 +77,13 @@ bgd_generate_report() {
   local deployment_id="$1"
   local output_file="${2:-report-${deployment_id}.txt}"
   
-  bgd_log_info "Generating deployment report for $deployment_id"
+  bgd_log "Generating deployment report for $deployment_id" "info"
   
   # Get logs for this deployment
   local log_file="${BGD_LOGS_DIR}/${APP_NAME}-${deployment_id}.log"
   
   if [ ! -f "$log_file" ]; then
-    bgd_log_error "No deployment log found for $deployment_id"
+    bgd_log "No deployment log found for $deployment_id" "error"
     return 1
   fi
   
@@ -117,7 +112,7 @@ EOL
   read ACTIVE_ENV INACTIVE_ENV <<< $(bgd_get_environments)
   echo "  Active Environment: $ACTIVE_ENV" >> "$output_file"
   
-  bgd_log_info "Deployment report generated: $output_file"
+  bgd_log "Deployment report generated: $output_file" "success"
   return 0
 }
 
@@ -126,16 +121,24 @@ bgd_cleanup_audit_logs() {
   local retention_days="${AUDIT_RETENTION_DAYS:-90}"
   local log_file="${AUDIT_LOG_FILE:-audit.log}"
   
-  bgd_log_info "Cleaning up audit logs older than $retention_days days"
+  bgd_log "Cleaning up audit logs older than $retention_days days" "info"
   
   if [ -f "$log_file" ]; then
     # Create a temporary file with only recent logs
     local tmp_file=$(mktemp)
-    local cutoff_date=$(date -d "$retention_days days ago" +"%Y-%m-%dT%H:%M:%SZ")
+    local cutoff_date=$(date -d "$retention_days days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -v-${retention_days}d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
     
-    jq -c "select(.timestamp >= \"$cutoff_date\")" "$log_file" > "$tmp_file"
-    mv "$tmp_file" "$log_file"
-  fi
+    if [ -n "$cutoff_date" ] && command -v jq &> /dev/null; then
+      jq -c "select(.timestamp >= \"$cutoff_date\")" "$log_file" > "$tmp_file"
+      mv "$tmp_file" "$log_file"
+      bgd_log "Audit logs cleaned up" "success"
+    else
+      bgd_log "Unable to clean up audit logs (jq not available or date command failed)" "warning"
+      rm -f "$tmp_file"
+    fi
+  }
+  
+  return 0
 }
 
 # Audit Logging Hooks
@@ -144,10 +147,15 @@ bgd_hook_pre_deploy() {
   local app_name="$2"
   
   # Log deployment start event
-  local details=$(jq -n \
-    --arg app_name "$app_name" \
-    --arg version "$version" \
-    '{"app": $app_name, "version": $version}')
+  local details=""
+  if command -v jq &> /dev/null; then
+    details=$(jq -n \
+      --arg app_name "$app_name" \
+      --arg version "$version" \
+      '{"app": $app_name, "version": $version}')
+  else
+    details="{\"app\":\"$app_name\",\"version\":\"$version\"}"
+  fi
     
   bgd_audit_log "deployment_started" "info" "$details"
   
@@ -159,11 +167,16 @@ bgd_hook_post_deploy() {
   local env_name="$2"
   
   # Log deployment complete event
-  local details=$(jq -n \
-    --arg app_name "$APP_NAME" \
-    --arg version "$version" \
-    --arg env_name "$env_name" \
-    '{"app": $app_name, "version": $version, "environment": $env_name}')
+  local details=""
+  if command -v jq &> /dev/null; then
+    details=$(jq -n \
+      --arg app_name "$APP_NAME" \
+      --arg version "$version" \
+      --arg env_name "$env_name" \
+      '{"app": $app_name, "version": $version, "environment": $env_name}')
+  else
+    details="{\"app\":\"$APP_NAME\",\"version\":\"$version\",\"environment\":\"$env_name\"}"
+  fi
     
   bgd_audit_log "deployment_completed" "info" "$details"
   
@@ -180,10 +193,15 @@ bgd_hook_post_cutover() {
   local target_env="$1"
   
   # Log cutover event
-  local details=$(jq -n \
-    --arg app_name "$APP_NAME" \
-    --arg target_env "$target_env" \
-    '{"app": $app_name, "environment": $target_env}')
+  local details=""
+  if command -v jq &> /dev/null; then
+    details=$(jq -n \
+      --arg app_name "$APP_NAME" \
+      --arg target_env "$target_env" \
+      '{"app": $app_name, "environment": $target_env}')
+  else
+    details="{\"app\":\"$APP_NAME\",\"environment\":\"$target_env\"}"
+  fi
     
   bgd_audit_log "cutover_completed" "info" "$details"
   
@@ -194,32 +212,17 @@ bgd_hook_post_rollback() {
   local rollback_env="$1"
   
   # Log rollback event
-  local details=$(jq -n \
-    --arg app_name "$APP_NAME" \
-    --arg rollback_env "$rollback_env" \
-    '{"app": $app_name, "environment": $rollback_env}')
+  local details=""
+  if command -v jq &> /dev/null; then
+    details=$(jq -n \
+      --arg app_name "$APP_NAME" \
+      --arg rollback_env "$rollback_env" \
+      '{"app": $app_name, "environment": $rollback_env}')
+  else
+    details="{\"app\":\"$APP_NAME\",\"environment\":\"$rollback_env\"}"
+  fi
     
   bgd_audit_log "rollback_completed" "warning" "$details"
-  
-  return 0
-}
-
-bgd_hook_post_traffic_shift() {
-  local version="$1"
-  local target_env="$2"
-  local blue_weight="$3"
-  local green_weight="$4"
-  
-  # Log traffic shift event
-  local details=$(jq -n \
-    --arg app_name "$APP_NAME" \
-    --arg version "$version" \
-    --arg target_env "$target_env" \
-    --argjson blue_weight "$blue_weight" \
-    --argjson green_weight "$green_weight" \
-    '{"app": $app_name, "version": $version, "environment": $target_env, "traffic": {"blue": $blue_weight, "green": $green_weight}}')
-    
-  bgd_audit_log "traffic_shifted" "info" "$details"
   
   return 0
 }

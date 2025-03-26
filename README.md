@@ -1,10 +1,10 @@
 # Blue/Green Deployment System
 
-A comprehensive utility for implementing zero-downtime deployments using the blue/green deployment strategy. This toolkit enables continuous integration and deployment pipelines to maintain two identical environments, gradually shift traffic between them, and achieve seamless updates with no downtime.
+A comprehensive toolkit for implementing zero-downtime deployments using the blue/green deployment strategy. This toolkit enables continuous integration and deployment pipelines to maintain two identical environments, gradually shift traffic between them, and achieve seamless updates with no downtime.
 
 ## What Is This?
 
-This is **not** an application, but a collection of deployment scripts and configuration templates that your CI/CD pipeline installs **directly on your production server** to enable blue/green deployments. Think of it as a server-side deployment toolkit that works with your existing Docker-based applications.
+This is a collection of deployment scripts and configuration templates that your CI/CD pipeline installs **directly on your production server** to enable blue/green deployments. Think of it as a server-side deployment toolkit that works with your existing Docker-based applications.
 
 ## Table of Contents
 
@@ -13,30 +13,22 @@ This is **not** an application, but a collection of deployment scripts and confi
 - [Prerequisites](#prerequisites)
 - [Application Requirements](#application-requirements)
 - [CI/CD Integration](#cicd-integration)
-- [Service Name Configuration](#service-name-configuration)
 - [Command Reference](#command-reference)
 - [Plugin System](#plugin-system)
-  - [Database Migrations](#database-migrations)
-  - [Service Discovery](#service-discovery)
-  - [SSL Automation](#ssl-automation)
-  - [Audit Logging](#audit-logging)
-  - [Creating Custom Plugins](#creating-custom-plugins)
 - [Multi-Container Support](#multi-container-support)
 - [Domain-Based Routing](#domain-based-routing)
 - [Advanced Configuration](#advanced-configuration)
 - [Troubleshooting](#troubleshooting)
 - [Security Best Practices](#security-best-practices)
-- [Changelog](#changelog)
-- [Namespace Management](#namespace-management)
 
 ## Overview
 
 Blue/green deployment is a release technique that reduces downtime and risk by running two identical production environments called "Blue" and "Green":
 
-- **Blue Environment**: Currently in production serving live traffic
-- **Green Environment**: New version being deployed and tested
+- **Blue Environment**: One of the production environments
+- **Green Environment**: The other production environment
 
-This toolkit adds blue/green deployment capabilities to your existing Docker applications by:
+At any time, only one of these environments receives production traffic. This toolkit adds blue/green deployment capabilities to your existing Docker applications by:
 
 1. Creating two separate but identical environments on your server
 2. Setting up Nginx as a reverse proxy for traffic control
@@ -98,7 +90,7 @@ flowchart LR
 
 ### Multi-Container Infrastructure
 
-With the enhanced multi-container support, your infrastructure can now support both stateless (blue/green deployed) and stateful (shared) services:
+With the multi-container support, your infrastructure can support both stateless (blue/green deployed) and stateful (shared) services:
 
 ```mermaid
 flowchart TB
@@ -183,7 +175,7 @@ flowchart TD
 ## Prerequisites
 
 To use this toolkit, you need:
-- A Linux server (like Vultr VPS)
+- A Linux server
 - Docker and Docker Compose installed on your server
 - CI/CD platform with SSH access to your server (GitHub Actions, GitLab CI, etc.)
 - Server location for your deployments (e.g., `/app/your-project`)
@@ -260,8 +252,6 @@ name: CI/CD with Blue-Green Deployment
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   schedule:
     # Run cleanup job every day at 2:00 AM UTC
     - cron: '0 2 * * *'
@@ -306,12 +296,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # Download deployment toolkit from release
-      - name: Download deployment toolkit
-        run: |
-          mkdir -p deployment
-          curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v2.0.0.tar.gz -o deployment/toolkit.tar.gz
-      
       # Copy deployment toolkit and configuration to server
       - name: Copy deployment toolkit to server
         uses: appleboy/scp-action@master
@@ -319,7 +303,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "deployment/toolkit.tar.gz,docker-compose.yml,Dockerfile"
+          source: "docker-compose.yml,Dockerfile"
           target: '/app/myapp'
           strip_components: 0
       
@@ -337,57 +321,33 @@ jobs:
           # SSL configuration
           DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
           CERTBOT_EMAIL: ${{ vars.CERTBOT_EMAIL }}
-          SSL_ENABLED: ${{ vars.SSL_ENABLED || 'true' }}
           # Database configuration
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DB_SHADOW_ENABLED: ${{ vars.DB_SHADOW_ENABLED || 'true' }}
-          # Service discovery
-          SERVICE_REGISTRY_ENABLED: ${{ vars.SERVICE_REGISTRY_ENABLED || 'true' }}
+          # Notification configuration
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS,DOMAIN_NAME,CERTBOT_EMAIL,SSL_ENABLED,DATABASE_URL,DB_SHADOW_ENABLED,SERVICE_REGISTRY_ENABLED
+          envs: VERSION,IMAGE_REPO,APP_API_ENDPOINT,APP_CONFIG_VALUE,APP_SECRET_KEY,APP_CORS_ORIGINS,DOMAIN_NAME,CERTBOT_EMAIL,DATABASE_URL,TELEGRAM_BOT_TOKEN,TELEGRAM_CHAT_ID
           script: |
             cd /app/myapp
             
-            # Extract toolkit if not already installed
-            if [ ! -f "./scripts/bgd-deploy.sh" ]; then
-              tar -xzf toolkit.tar.gz
-              chmod +x ./install.sh
-              ./install.sh myapp
-            fi
-            
-            # Make scripts executable (ensures permissions are correct)
-            chmod +x ./scripts/*.sh
-            
-            # Export application-specific environment variables BEFORE deployment
-            export APP_API_ENDPOINT="$APP_API_ENDPOINT"
-            export APP_CONFIG_VALUE="$APP_CONFIG_VALUE"
-            export APP_SECRET_KEY="$APP_SECRET_KEY"
-            export APP_CORS_ORIGINS="$APP_CORS_ORIGINS"
-            
-            # Export plugin-specific environment variables
-            export DOMAIN_NAME="$DOMAIN_NAME"
-            export CERTBOT_EMAIL="$CERTBOT_EMAIL"
-            export SSL_ENABLED="$SSL_ENABLED"
-            export DATABASE_URL="$DATABASE_URL"
-            export DB_SHADOW_ENABLED="$DB_SHADOW_ENABLED"
-            export SERVICE_REGISTRY_ENABLED="$SERVICE_REGISTRY_ENABLED"
-            
-            # Clean up failed deployments
-            ./scripts/bgd-cleanup.sh --app-name=myapp --failed-only
-            
-            # Run the deployment
+            # Deploy with enhanced toolkit
             ./scripts/bgd-deploy.sh "$VERSION" \
               --app-name=myapp \
               --image-repo=$IMAGE_REPO \
-              --nginx-port=80 \
-              --nginx-ssl-port=443 \
-              --blue-port=8081 \
-              --green-port=8082 \
-              --health-endpoint=/health \
-              --setup-shared
+              --auto-port-assignment \
+              --auto-rollback \
+              --notify-enabled \
+              --telegram-bot-token="$TELEGRAM_BOT_TOKEN" \
+              --telegram-chat-id="$TELEGRAM_CHAT_ID" \
+              --domain-name="$DOMAIN_NAME" \
+              --certbot-email="$CERTBOT_EMAIL"
+            
+            # Complete the cutover
+            ./scripts/bgd-cutover.sh green --app-name=myapp
   
   cleanup:
     if: github.event_name == 'schedule'
@@ -401,14 +361,17 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /app/myapp
-            ./scripts/bgd-cleanup.sh --app-name=myapp --old-only
+            ./scripts/bgd-cleanup.sh \
+              --app-name=myapp \
+              --old-only \
+              --cleanup-orphans
 ```
 
 ### Configuring Your Deployment
 
 The blue/green deployment system uses command-line parameters for configuration:
 
-```yaml
+```bash
 ./scripts/bgd-deploy.sh "$VERSION" \
   --app-name=myapp \
   --image-repo=ghcr.io/myusername/myproject \
@@ -418,12 +381,12 @@ The blue/green deployment system uses command-line parameters for configuration:
   --green-port=8082 \
   --health-endpoint=/health \
   --database-url="postgresql://user:pass@host/db" \
-  --api-key="your-api-key" \
   --domain-name="example.com" \
   --ssl-enabled=true \
   --certbot-email="admin@example.com" \
-  --db-shadow-enabled=true \
-  --service-registry-enabled=true
+  --auto-port-assignment \
+  --auto-rollback \
+  --notify-enabled
 ```
 
 Benefits of this approach:
@@ -432,296 +395,58 @@ Benefits of this approach:
 - Better traceability in logs and deployment history
 - Easier to test different configurations
 
-### Environment Variables and Secrets
-
-Environment variables are automatically captured and propagated to your blue/green environments:
-
-1. **Explicit parameters**: Variables passed as command-line parameters (like `--database-url`) take highest precedence
-2. **Exported variables**: Any variables exported before running the deployment script are captured
-3. **System-defined patterns**: Variables matching patterns like `DB_*` or `APP_*` are automatically included
-4. **Plugin-defined variables**: Variables registered by plugins (like `SSL_*` or `SERVICE_*`) are included
-5. **CI/CD variables**: Variables passed via the `env:` section in your CI/CD workflow propagate properly
-
-## Supporting Multiple Applications
-
-For organizations with multiple applications, you can set up multiple deployment pipelines:
-
-```yaml
-# In your GitHub Actions workflow
-- name: Deploy to Production
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/soluigi/backend
-      
-      # Extract toolkit if not already installed
-      if [ ! -f "./scripts/bgd-deploy.sh" ]; then
-        mkdir -p toolkit && cd toolkit
-        curl -L https://github.com/elijahmont3x/blue-green-deploy/archive/refs/tags/v2.0.0.tar.gz | tar xz --strip-components=1
-        chmod +x ./install.sh
-        ./install.sh backend
-        cd ..
-      fi
-      
-      # Deploy backend
-      ./scripts/bgd-deploy.sh "$VERSION" \
-        --app-name=backend \
-        --image-repo=soluigi/backend \
-        --nginx-port=8080 \
-        --blue-port=8081 \
-        --green-port=8082
-```
-
-Each application maintains its own copy of the deployment toolkit, but they can be organized under a common directory structure:
-
-```
-/app/soluigi/              # Organization root
-├── backend/               # Backend project
-│   ├── scripts/           # Deployment scripts
-│   ├── docker-compose.yml
-│   └── ...
-│
-└── website/               # Website project
-    ├── scripts/           # Deployment scripts
-    ├── docker-compose.yml
-    └── ...
-```
-
-## Service Name Configuration
-
-By default, the deployment system assumes your main application service is named `app` in your docker-compose.yml file. If you use a different service name, you'll need to update the Nginx configuration templates accordingly.
-
-### Example docker-compose.yml
-
-Here's a sample docker-compose.yml with multi-container support that works with the default configuration:
-
-```yaml
-version: '3.8'
-name: ${APP_NAME:-myapp}
-
-# Define networks that can be shared across environments
-networks:
-  # This network is shared between blue/green environments
-  shared-network:
-    name: ${APP_NAME}-shared-network
-    external: ${SHARED_NETWORK_EXISTS:-false}
-  # This network is environment-specific
-  env-network:
-    name: ${APP_NAME}-${ENV_NAME}-network
-    driver: bridge
-
-# Define volumes that persist between deployments
-volumes:
-  db-data:
-    name: ${APP_NAME}-db-data
-    external: ${DB_DATA_EXISTS:-false}
-  redis-data:
-    name: ${APP_NAME}-redis-data
-    external: ${REDIS_DATA_EXISTS:-false}
-
-services:
-  # Blue/Green deployable services (stateless)
-  # ==================================
-  
-  # Main application service - will be blue/green deployed
-  app:  # This is the main service name the system expects by default
-    image: ${IMAGE_REPO:-ghcr.io/example/myapp}:${VERSION:-latest}
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - ENV_NAME=${ENV_NAME:-default}
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@db:5432/myapp}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-    ports:
-      - '${PORT:-3000}:3000'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - env-network
-      - shared-network
-    depends_on:
-      - db
-      - redis
-    labels:
-      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
-
-  # Frontend service - will also be blue/green deployed
-  frontend:
-    image: ${FRONTEND_IMAGE_REPO:-ghcr.io/example/frontend}:${FRONTEND_VERSION:-latest}
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=${NODE_ENV:-production}
-      - ENV_NAME=${ENV_NAME:-default}
-      - API_URL=${API_URL:-http://app:3000}
-    ports:
-      - '${FRONTEND_PORT:-8080}:80'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:80/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - env-network
-      - shared-network
-    labels:
-      - "bgd.role=deployable"  # Marks service as suitable for blue/green deployment
-
-  # Shared/persistent services (stateful)
-  # =============================
-  
-  # Database service - shared between blue/green environments
-  db:
-    image: postgres:14-alpine
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME:-myapp}
-      - POSTGRES_USER=${DB_USER:-postgres}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
-    volumes:
-      - db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - shared-network
-    labels:
-      - "bgd.role=persistent"  # Marks service as shared between environments
-    profiles:
-      - shared  # Only starts when explicitly included
-
-  # Redis service - shared between blue/green environments
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - shared-network
-    labels:
-      - "bgd.role=persistent"  # Marks service as shared between environments
-    profiles:
-      - shared  # Only starts when explicitly included
-
-  # Reverse proxy/load balancer
-  nginx:
-    image: nginx:stable-alpine
-    restart: unless-stopped
-    ports:
-      - '${NGINX_PORT:-80}:80'
-      - '${NGINX_SSL_PORT:-443}:443'
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
-    networks:
-      - env-network
-      - shared-network
-    depends_on:
-      - app
-      - frontend
-    labels:
-      - "bgd.role=proxy"  # Marks service as the proxy
-```
-
-### Customizing Service Names
-
-If your main service has a different name (e.g., "web", "api", or "frontend"), include an additional step in your CI/CD pipeline to update the templates before installation:
-
-```yaml
-# In your GitHub Actions workflow
-- name: Deploy to Production
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/myapp
-      
-      # Extract toolkit if not already installed
-      if [ ! -f "./scripts/bgd-deploy.sh" ]; then
-        tar -xzf toolkit.tar.gz
-        chmod +x ./install.sh
-        ./install.sh myapp
-        
-        # Update Nginx templates to use different service name
-        sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-single-env.conf.template
-        sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-dual-env.conf.template
-        sed -i 's/app-1:3000/web-1:3000/g' config/templates/nginx-multi-domain.conf.template
-        
-        # Update docker-compose override template
-        sed -i 's/^  app:/  web:/g' config/templates/docker-compose.override.template
-      fi
-      
-      # Continue with deployment...
-```
-
-### Port Configuration
-
-If your application runs on a port other than 3000:
-
-1. Update the Nginx templates in your CI/CD workflow:
-   ```bash
-   sed -i 's/:3000/:8000/g' config/templates/nginx-single-env.conf.template
-   sed -i 's/:3000/:8000/g' config/templates/nginx-dual-env.conf.template
-   sed -i 's/:3000/:8000/g' config/templates/nginx-multi-domain.conf.template
-   ```
-
-2. Update your docker-compose.yml to expose the correct port:
-   ```yaml
-   services:
-     app:
-       ports:
-         - '${PORT:-8000}:8000'
-   ```
-
 ## Command Reference
 
-The deployment toolkit provides these commands that your CI/CD pipeline can use:
+The deployment toolkit provides these commands:
 
 ### Deploy
 
 ```bash
 ./scripts/bgd-deploy.sh VERSION [OPTIONS]
 
-# Options:
-#   --app-name=NAME           Application name
-#   --image-repo=REPO         Docker image repository
+# Required Arguments:
+#   VERSION                Version identifier for the deployment
+
+# Required Options:
+#   --app-name=NAME       Application name
+#   --image-repo=REPO     Docker image repository
+
+# Port Options:
+#   --nginx-port=PORT     Nginx HTTP port (default: 80)
+#   --nginx-ssl-port=PORT Nginx HTTPS port (default: 443)
+#   --blue-port=PORT      Blue environment port (default: 8081)
+#   --green-port=PORT     Green environment port (default: 8082)
+#   --auto-port-assignment Automatically assign available ports
+
+# Health Check Options:
+#   --health-endpoint=PATH Health check endpoint (default: /health)
+#   --health-retries=N    Number of health check retries (default: 12)
+#   --health-delay=SEC    Delay between health checks (default: 5)
+#   --timeout=SEC         Timeout for health check requests (default: 5)
+#   --collect-logs        Collect container logs on failure
+#   --max-log-lines=N     Maximum number of log lines to collect (default: 100)
+#   --retry-backoff       Use exponential backoff for health check retries
+
+# Deployment Options:
+#   --domain-name=DOMAIN  Domain name for multi-domain routing
 #   --frontend-image-repo=REPO Frontend image repository
-#   --frontend-version=VER    Frontend version (defaults to same as backend VERSION)
-#   --domain-name=DOMAIN      Domain name for multi-domain routing
-#   --nginx-port=PORT         Nginx HTTP port (default: 80)
-#   --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
-#   --blue-port=PORT          Blue environment port (default: 8081)
-#   --green-port=PORT         Green environment port (default: 8082)
-#   --health-endpoint=PATH    Health check endpoint (default: /health)
-#   --health-retries=N        Number of health check retries (default: 12)
-#   --health-delay=SEC        Delay between health checks (default: 5)
-#   --timeout=SEC             Timeout for each request (default: 5)
-#   --database-url=URL        Database connection string
-#   --redis-url=URL           Redis connection string
-#   --api-key=KEY             API key
-#   --setup-shared            Initialize shared services (first deployment)
-#   --skip-migrations         Skip database migrations
-#   --migrations-cmd=CMD      Custom migrations command (default: npm run migrate)
-#   --force                   Force deployment even if target environment is active
-#   --no-shift                Don't shift traffic automatically (manual cutover)
+#   --frontend-version=VER Frontend version (defaults to same as VERSION)
+#   --setup-shared        Initialize shared services (database, cache, etc.)
+#   --skip-migrations     Skip database migrations
+#   --migrations-cmd=CMD  Custom migrations command
+#   --force               Force deployment even if target environment is active
+#   --no-shift            Don't shift traffic automatically
+
+# Advanced Options:
+#   --auto-rollback       Automatically roll back failed deployments
+#   --notify-enabled      Enable notifications
+#   --telegram-bot-token=TOK Telegram bot token for notifications
+#   --telegram-chat-id=ID Telegram chat ID for notifications
+#   --slack-webhook=URL   Slack webhook URL for notifications
 
 # Examples:
-./scripts/bgd-deploy.sh v1.0 --app-name=myapp --image-repo=myname/myapp
-./scripts/bgd-deploy.sh v1.1 --app-name=myapp --domain-name=example.com --setup-shared
+./scripts/bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
+./scripts/bgd-deploy.sh v1.0.0 --app-name=myapp --domain-name=example.com --setup-shared
 ```
 
 ### Cutover
@@ -729,20 +454,23 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ```bash
 ./scripts/bgd-cutover.sh [blue|green] [OPTIONS]
 
-# Options:
-#   --app-name=NAME       Application name
-#   --domain-name=DOMAIN  Domain name for multi-domain routing
-#   --keep-old            Don't stop the previous environment
-#   --nginx-port=PORT     Nginx external port
-#   --nginx-ssl-port=PORT Nginx HTTPS port
-#   --blue-port=PORT      Blue environment port
-#   --green-port=PORT     Green environment port
-#   --health-endpoint=PATH Health check endpoint
-#   --health-retries=N    Number of health check retries
-#   --health-delay=SEC    Delay between health checks
+# Required Arguments:
+#   [blue|green]          Target environment to cutover to
 
-# Example:
-./scripts/bgd-cutover.sh green --app-name=myapp --domain-name=example.com
+# Required Options:
+#   --app-name=NAME       Application name
+
+# Configuration Options:
+#   --domain-name=DOMAIN  Domain name for multi-domain routing
+#   --nginx-port=PORT     Nginx external port (default: 80)
+#   --nginx-ssl-port=PORT Nginx HTTPS port (default: 443)
+#   --blue-port=PORT      Blue environment port (default: 8081)
+#   --green-port=PORT     Green environment port (default: 8082)
+#   --keep-old            Don't stop the previous environment
+
+# Examples:
+./scripts/bgd-cutover.sh green --app-name=myapp
+./scripts/bgd-cutover.sh blue --app-name=myapp --keep-old --domain-name=example.com
 ```
 
 ### Rollback
@@ -750,18 +478,15 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ```bash
 ./scripts/bgd-rollback.sh [OPTIONS]
 
-# Options:
+# Required Options:
 #   --app-name=NAME       Application name
-#   --force               Force rollback even if previous environment is unhealthy
-#   --nginx-port=PORT     Nginx external port
-#   --blue-port=PORT      Blue environment port
-#   --green-port=PORT     Green environment port
-#   --health-endpoint=PATH Health check endpoint
-#   --health-retries=N    Number of health check retries
-#   --health-delay=SEC    Delay between health checks
 
-# Example:
+# Advanced Options:
+#   --force               Force rollback even if environment is unhealthy
+
+# Examples:
 ./scripts/bgd-rollback.sh --app-name=myapp
+./scripts/bgd-rollback.sh --app-name=myapp --force
 ```
 
 ### Cleanup
@@ -769,15 +494,22 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ```bash
 ./scripts/bgd-cleanup.sh [OPTIONS]
 
-# Options:
+# Required Options:
 #   --app-name=NAME       Application name
+
+# Cleanup Options:
 #   --all                 Clean up everything including current active environment
 #   --failed-only         Clean up only failed deployments
 #   --old-only            Clean up only old, inactive environments
+#   --cleanup-networks    Clean up orphaned networks
+#   --cleanup-volumes     Clean up volumes (excluding persistent volumes)
+#   --cleanup-orphans     Clean up orphaned containers
+#   --cleanup-all-resources Clean up all resources (networks, volumes, containers)
 #   --dry-run             Only show what would be cleaned without actually removing anything
 
-# Example:
+# Examples:
 ./scripts/bgd-cleanup.sh --app-name=myapp --failed-only
+./scripts/bgd-cleanup.sh --app-name=myapp --old-only --cleanup-orphans
 ```
 
 ### Health Check
@@ -786,451 +518,115 @@ The deployment toolkit provides these commands that your CI/CD pipeline can use:
 ./scripts/bgd-health-check.sh [ENDPOINT] [OPTIONS]
 
 # Arguments:
-#   ENDPOINT              URL to check (default: http://localhost:3000/health)
+#   ENDPOINT              URL to check (e.g., http://localhost:8081/health)
 
-# Options:
+# Health Check Options:
 #   --app-name=NAME       Application name
-#   --retries=N           Number of health check retries (default: 5)
-#   --delay=SEC           Delay between health checks (default: 10)
+#   --retries=N           Number of health check retries (default: 12)
+#   --delay=SEC           Delay between health checks (default: 5)
 #   --timeout=SEC         Timeout for each request (default: 5)
+#   --retry-backoff       Use exponential backoff for retries
+#   --collect-logs        Collect container logs on failure
+#   --max-log-lines=N     Maximum number of log lines to collect (default: 100)
 
-# Example:
-./scripts/bgd-health-check.sh http://localhost:8081/health --retries=10 --delay=5
+# Examples:
+./scripts/bgd-health-check.sh http://localhost:8081/health
+./scripts/bgd-health-check.sh http://localhost:8081/health --retries=10 --delay=5 --retry-backoff
 ```
 
 ## Plugin System
 
-The enhanced plugin system allows you to extend the deployment process with custom hooks and functionality. Plugins are shell scripts that your CI/CD pipeline can place in the `plugins/` directory of your deployment environment.
+The plugin system allows you to extend the deployment process with custom hooks and functionality.
 
-### Available Hooks
+### Available Plugins
 
-- `hook_pre_deploy`: Runs before deployment starts
-- `hook_post_deploy`: Runs after deployment completes
-- `hook_pre_cutover`: Runs before traffic cutover
-- `hook_post_cutover`: Runs after traffic cutover
-- `hook_pre_rollback`: Runs before rollback
-- `hook_post_rollback`: Runs after rollback
-- `hook_post_health`: Runs after health checks pass
-- `hook_cleanup`: Runs during cleanup operations
+#### Database Migrations Plugin
 
-### Plugin Registration System
-
-Plugins can register custom arguments that will be automatically accepted by the deployment scripts:
-
-```bash
-# In your plugin file
-register_plugin_argument "plugin-name" "ARG_NAME" "default-value"
-```
-
-These arguments can then be passed to the deployment script:
-
-```bash
-./scripts/bgd-deploy.sh v1.0 --app-name=myapp --arg-name=custom-value
-```
-
-### Database Migrations
-
-The database migrations plugin (`bgd-db-migrations.sh`) provides advanced database migration capabilities:
+The database migrations plugin provides advanced database migration capabilities:
 
 - Schema and full database backups
-- Migration history tracking
-- Rollback capabilities
-- Shadow database approach for zero-downtime migrations
-
-#### Configuration
+- Zero-downtime migrations with shadow database approach
+- Automatic rollback capabilities
 
 ```bash
 # Enable database migrations with shadow database
-./scripts/bgd-deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --database-url="postgresql://user:pass@host/db" \
   --db-shadow-enabled=true \
-  --db-shadow-suffix="_shadow" \
   --skip-migrations=false \
   --migrations-cmd="npm run migrate"
 ```
 
-#### Zero-Downtime Migration Process
+#### Service Discovery Plugin
 
-1. The plugin creates a shadow database (copy of production database)
-2. Migrations are applied to the shadow database
-3. The shadow database is validated
-4. The main and shadow databases are swapped (renamed)
-5. The application continues running with the updated schema
+The service discovery plugin enables automatic service registration and discovery:
 
-This approach ensures zero-downtime during schema changes, as the application only ever sees a fully migrated database.
-
-### Service Discovery
-
-The service discovery plugin (`bgd-service-discovery.sh`) enables automatic service registration and discovery:
-
-- Registers services with internal and/or external registries
-- Generates service URLs for environment variables
-- Updates Nginx configuration for discovered services
-
-#### Configuration
+- Registers services with internal registry
+- Updates environment variables for service URLs
+- Supports multi-service architectures
 
 ```bash
 # Enable service discovery
-./scripts/bgd-deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --service-registry-enabled=true \
-  --service-registry-url="http://registry:8080" \
   --service-auto-generate-urls=true
 ```
 
-#### Service Discovery Process
+#### SSL Automation Plugin
 
-1. After a successful deployment, services are registered in a local registry file
-2. If configured, services are also registered with an external registry
-3. Service URLs are generated and added to environment variables
-4. Nginx configuration is updated to include discovered services
+The SSL automation plugin handles SSL certificate management:
 
-# Updated CHANGELOG.md
-
-```markdown
-# Changelog
-
-## v2.0.0 (2025-03-23)
-
-### Major Enhancements
-
-- **Namespace Management**: Complete refactoring to use proper namespacing
-  - All internal functions prefixed with `bgd_` to avoid conflicts
-  - All core files prefixed with `bgd-` (e.g., `bgd-core.sh`)
-  - **Removed backward compatibility wrapper scripts**
-  - Plugin system namespacing for extensibility
-
-- **Plugin System**: Complete overhaul of the plugin architecture with argument registration
-  - New hook system for extending deployment process
-  - Plugin argument registration mechanism
-  - Automatic environment variable propagation for plugins
-
-- **Multi-Container Support**: Enhanced architecture for complex applications
-  - Support for deploying multiple containers per environment
-  - Separation of stateless and stateful services
-  - Shared network and volume management
-  - Improved docker-compose template handling
-
-- **Domain-Based Routing**: Advanced traffic routing capabilities
-  - Support for multiple domains and subdomains
-  - Domain-specific service routing
-  - Integrated SSL certificates for all domains
-
-- **Database Migration Strategies**: Zero-downtime database handling
-  - Shadow database approach for zero-downtime migrations
-  - Comprehensive backup and restore capabilities
-  - Migration history tracking
-  - Framework-specific migration adapters
-
-- **Service Discovery**: Automatic service registration
-  - Local and external service registry integration
-  - Dynamic service URL generation
-  - Automatic Nginx configuration updates
-  - Inter-service communication management
-
-- **SSL Automation**: Completely rebuilt SSL certificate handling
-  - DNS-based verification replaces HTTP verification 
-  - Multiple DNS provider support (GoDaddy, Namecheap) with easy extensibility
-  - Automatic detection and reconfiguration of existing certificates
-  - Let's Encrypt integration with improved reliability
-  - Automatic certificate renewal with proper credentials management
-  - Multi-domain certificate support
-  - Seamless CI/CD integration with secure API key handling
-  - ACME challenge configuration
-
-- **Audit Logging**: Comprehensive deployment tracking
-  - Structured logging with timestamps
-  - Integration with monitoring systems
-  - Customizable notification options
-  - Deployment history tracking
-
-### New Scripts
-
-- **health-check.sh**: Standalone utility for checking service health
-  - Flexible endpoint verification
-  - Custom retry and delay settings
-  - Enhanced output and error handling
-
-### Enhanced Scripts
-
-- **common.sh**: Core utilities and plugin management
-  - Added plugin registration system
-  - Improved parameter parsing
-  - Enhanced environment variable handling
-  - Expanded helper functions
-
-- **deploy.sh**: Primary deployment workflow
-  - Support for multi-container deployments
-  - Integration with all plugins
-  - Improved error handling
-  - Enhanced traffic shifting
-
-- **cutover.sh**: Traffic transition management
-  - Support for keeping old environments
-  - Health verification before cutover
-  - Multi-domain support
-
-- **rollback.sh**: Recovery and rollback capabilities
-  - Enhanced database rollback
-  - Improved service restoration
-  - Plugin integration for notifications
-
-- **cleanup.sh**: Deployment cleanup utilities
-  - More flexible cleanup options
-  - Better docker resource management
-  - Improved cleanup reporting
-
-### New Plugins
-
-- **db-migrations.sh**: Database migration management
-  - Schema and full database backups
-  - Migration history tracking
-  - Shadow database zero-downtime migrations
-  - Framework-specific adapters
-  - Rollback capabilities
-
-- **service-discovery.sh**: Service registration
-  - Automatic service registration
-  - Service URL generation
-  - Nginx configuration updates
-  - External registry integration
-
-- **ssl-automation.sh**: Completely redesigned SSL management
-  - DNS-based verification for more reliable certificate issuance
-  - Support for multiple DNS providers (GoDaddy, Namecheap)
-  - Automatic detection and reconfiguration of existing certificates
-  - Enhanced renewal management
-  - API-based automation for CI/CD environments
-  - Multi-domain support
-  - Improved error handling and recovery
-
-- **audit-logging.sh**: Deployment tracking
-  - Structured event logging
-  - Monitoring system integration
-  - Notification capabilities
-  - History tracking
-
-### Documentation
-
-- Complete overhaul of the README.md
-- Added comprehensive plugin documentation
-- Added multi-container configuration examples
-- Added domain-based routing examples
-- Added troubleshooting guides
-- Enhanced security documentation
-- New usage examples for all features
-
-### Bugfixes
-
-- Fixed issue with environment variable propagation
-- Improved handling of failed health checks
-- Enhanced error recovery during deployments
-- Fixed race conditions in traffic shifting
-- Improved cleanup of orphaned containers
-- Enhanced SSL certificate validation
-- Fixed "chicken-and-egg" problem with SSL verification requiring a running webserver
-
-### Breaking Changes
-
-- Plugin system now requires explicit registration of custom arguments
-- Default service name expected in docker-compose.yml is now `app`
-- Stateful services must be marked with `bgd.role=persistent` label
-- SSL certificate directory structure has changed
-- SSL automation now requires DNS provider API credentials for fully automated operation
-```
-
-### SSL Automation
-
-The SSL automation plugin (`bgd-ssl.sh`) handles SSL certificate management with Let's Encrypt:
-
-- DNS-based verification for reliable certificate issuance (solves the "chicken-and-egg" problem)
-- Multiple DNS provider support (GoDaddy, Namecheap)
-- Automatic certificate generation and renewal
+- Automatic certificate generation with Let's Encrypt
 - Nginx SSL configuration
-
-#### Configuration
+- Certificate renewal management
 
 ```bash
-# Enable SSL automation with GoDaddy DNS verification
-./scripts/bgd-deploy.sh v1.0 \
+# Enable SSL automation
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --domain-name="example.com" \
   --certbot-email="admin@example.com" \
-  --ssl-enabled=true \
-  --certbot-staging=false \
-  --godaddy-api-key="YOUR_API_KEY" \
-  --godaddy-api-secret="YOUR_API_SECRET"
-
-# Or use Namecheap as the DNS provider
-./scripts/bgd-deploy.sh v1.0 \
-  --app-name=myapp \
-  --domain-name="example.com" \
-  --certbot-email="admin@example.com" \
-  --ssl-enabled=true \
-  --namecheap-api-key="YOUR_API_KEY" \
-  --namecheap-api-user="YOUR_API_USER" \
-  --namecheap-username="YOUR_USERNAME"
+  --ssl-enabled=true
 ```
 
-#### DNS Provider Setup
+#### Notification Plugin
 
-To use DNS verification, you'll need API credentials for your DNS provider:
+The notification plugin provides deployment event notifications:
 
-**GoDaddy:**
-1. Create an API key at https://developer.godaddy.com/
-2. Store the API key and secret in your CI/CD secrets
-3. Pass `--godaddy-api-key` and `--godaddy-api-secret` parameters
-
-**Namecheap:**
-1. Enable API access in your Namecheap account
-2. Get your API key from the profile page
-3. Store the credentials in your CI/CD secrets
-4. Pass `--namecheap-api-key`, `--namecheap-api-user`, and `--namecheap-username` parameters
-
-#### SSL Automation Process
-
-1. The plugin detects your DNS provider based on provided credentials
-2. It checks if SSL certificates already exist
-3. For existing certificates, it automatically reconfigures them to use DNS verification
-4. For new certificates, it creates DNS TXT records via the provider's API
-5. Certbot is used to obtain certificates from Let's Encrypt
-6. Certificates are installed and Nginx is configured to use them
-7. A renewal script and cron job are set up for automatic renewals
-
-#### CI/CD Integration
-
-For CI/CD pipelines, store your DNS provider API credentials as secrets:
-
-```yaml
-# GitHub Actions example
-- name: Deploy with SSL automation
-  uses: appleboy/ssh-action@master
-  env:
-    # SSL credentials
-    GODADDY_API_KEY: ${{ secrets.GODADDY_API_KEY }}
-    GODADDY_API_SECRET: ${{ secrets.GODADDY_API_SECRET }}
-    CERTBOT_EMAIL: ${{ vars.CERTBOT_EMAIL }}
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    envs: GODADDY_API_KEY,GODADDY_API_SECRET,CERTBOT_EMAIL
-    script: |
-      ./scripts/bgd-deploy.sh "$VERSION" \
-        --app-name=myapp \
-        --domain-name="example.com" \
-        --certbot-email="$CERTBOT_EMAIL" \
-        --godaddy-api-key="$GODADDY_API_KEY" \
-        --godaddy-api-secret="$GODADDY_API_SECRET"
-```
-
-#### Manual Certificate Setup (If Needed)
-
-If you prefer to set up certificates manually first:
+- Telegram notifications
+- Slack notifications
+- Customizable notification levels and events
 
 ```bash
-# SSH into your server
-ssh your-user@your-server
-
-# Install GoDaddy plugin
-sudo pip3 install certbot-dns-godaddy
-
-# Create GoDaddy credentials file
-sudo mkdir -p /etc/letsencrypt/godaddy
-sudo bash -c 'cat > /etc/letsencrypt/godaddy/credentials.ini << EOF
-dns_godaddy_key = YOUR_GODADDY_API_KEY
-dns_godaddy_secret = YOUR_GODADDY_API_SECRET
-EOF'
-sudo chmod 600 /etc/letsencrypt/godaddy/credentials.ini
-
-# Obtain certificate with DNS verification
-sudo certbot certonly \
-  --authenticator dns-godaddy \
-  --dns-godaddy-credentials /etc/letsencrypt/godaddy/credentials.ini \
-  --dns-godaddy-propagation-seconds 60 \
-  -d example.com
-
-# Copy certificates to BGD directory
-sudo mkdir -p /app/myapp/certs
-sudo cp /etc/letsencrypt/live/example.com/fullchain.pem /app/myapp/certs/
-sudo cp /etc/letsencrypt/live/example.com/privkey.pem /app/myapp/certs/
-sudo chmod 644 /app/myapp/certs/*.pem
+# Enable notifications
+./scripts/bgd-deploy.sh v1.0.0 \
+  --app-name=myapp \
+  --notify-enabled=true \
+  --telegram-bot-token="your-token" \
+  --telegram-chat-id="your-chat-id"
 ```
 
-After manual setup, the plugin will detect and use the existing certificates, and handle renewal automatically.
+#### Audit Logging Plugin
 
-### Audit Logging
-
-The audit logging plugin (`bgd-audit-logging.sh`) provides comprehensive deployment event tracking:
+The audit logging plugin provides deployment event tracking:
 
 - Records deployment events with timestamps
 - Captures environment details
-- Integrates with external monitoring systems
-- Provides deployment notifications
-
-#### Configuration
+- Provides deployment history and reports
 
 ```bash
-# Enable audit logging with Slack notifications
-./scripts/bgd-deploy.sh v1.0 \
+# Configure audit logging
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
-  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
-  --audit-log-level="info"
-```
-
-### Creating Custom Plugins
-
-You can create your own plugins to extend the functionality of the deployment system:
-
-1. Create a shell script in the `plugins/` directory
-2. Implement the necessary hooks
-3. Register any custom arguments
-4. Include the plugin in your CI/CD pipeline
-
-Example custom plugin:
-
-```bash
-#!/bin/bash
-# plugins/custom-notification.sh
-
-# Register plugin arguments
-register_plugin_argument "custom-notification" "NOTIFY_EMAIL" ""
-register_plugin_argument "custom-notification" "NOTIFY_SMS" ""
-
-# Implement hooks
-hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
-  
-  if [ -n "${NOTIFY_EMAIL:-}" ]; then
-    log_info "Sending deployment notification email to $NOTIFY_EMAIL"
-    # Email sending logic here
-  fi
-  
-  if [ -n "${NOTIFY_SMS:-}" ]; then
-    log_info "Sending deployment notification SMS to $NOTIFY_SMS"
-    # SMS sending logic here
-  fi
-  
-  return 0
-}
-
-hook_post_rollback() {
-  local rollback_env="$1"
-  
-  if [ -n "${NOTIFY_EMAIL:-}" ]; then
-    log_info "Sending rollback notification email to $NOTIFY_EMAIL"
-    # Email sending logic here
-  fi
-  
-  return 0
-}
+  --audit-log-level="info" \
+  --audit-retention-days=90
 ```
 
 ## Multi-Container Support
 
-The enhanced system now supports deploying multiple containers as part of a single blue/green deployment:
+The system supports deploying multiple containers as part of a single blue/green deployment:
 
 - Deploy both backend and frontend applications
 - Share stateful services (database, cache) between environments
@@ -1248,7 +644,7 @@ The system distinguishes between two types of services:
 To set up shared services during initial deployment:
 
 ```bash
-./scripts/bgd-deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --setup-shared \
   --domain-name=example.com
@@ -1271,7 +667,7 @@ The system supports routing traffic to different services based on domains:
 
 ```bash
 # Configure domain-based routing
-./scripts/bgd-deploy.sh v1.0 \
+./scripts/bgd-deploy.sh v1.0.0 \
   --app-name=myapp \
   --domain-name="example.com" \
   --ssl-enabled=true
@@ -1280,137 +676,46 @@ The system supports routing traffic to different services based on domains:
 This will generate an Nginx configuration that routes traffic based on domains:
 - `example.com` and `www.example.com` -> Main application
 - `api.example.com` -> API service
-- `team.example.com` -> Frontend application
 
 ## Advanced Configuration
 
-### Configuration File Updates
-
-Your CI/CD pipeline should always copy the latest configuration files to the server as part of the deployment process:
-
-```yaml
-# In your GitHub Actions workflow
-- name: Copy configuration files to server
-  uses: appleboy/scp-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    source: "docker-compose.yml,Dockerfile,nginx/*.conf"
-    target: "/app/your-app-name"
-```
-
-This ensures that your server always has the latest configuration files when deploying new versions.
-
 ### Custom Nginx Configuration
 
-For advanced Nginx configuration (SSL, custom routing, etc.), include template modifications in your CI/CD pipeline:
+For advanced Nginx configuration (SSL, custom routing, etc.), you can modify the templates:
 
-```yaml
-# In your GitHub Actions workflow
-- name: Deploy with custom Nginx configuration
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/myapp
-      
-      # Update Nginx template with custom configuration
-      cat > config/templates/nginx-single-env.conf.template << 'EOL'
-      # Custom Nginx configuration with specialized routing
-      worker_processes auto;
-      events {
-          worker_connections 1024;
-      }
-      
-      http {
-          # Custom configuration here
-      }
-      EOL
-      
-      # Continue with deployment...
-```
+- `config/templates/nginx-single-env.conf.template`
+- `config/templates/nginx-dual-env.conf.template`
+- `config/templates/nginx-multi-domain.conf.template`
+
+### Docker Compose Override
+
+For custom Docker Compose configuration, you can modify:
+
+- `config/templates/docker-compose.override.template`
 
 ## Troubleshooting
 
-### Common Issues in CI/CD Pipelines
+### Common Issues
 
 | Issue | Solution |
 |-------|----------|
-| SSH connection failures | Check credentials and server firewall settings |
-| Permission denied errors | Ensure your CI/CD user has appropriate permissions |
-| Health check failing | Check application logs in the CI/CD output |
-| Environment variables not being passed | Verify they're correctly defined in the CI/CD platform |
-| Service name mismatches | Ensure the service name in templates matches your docker-compose.yml |
+| Health check failing | Check application logs with `docker logs` |
+| Port conflicts | Use `--auto-port-assignment` flag |
 | Database migration failures | Check database credentials and migration script |
 | SSL certificate generation fails | Verify domain DNS configuration and firewall settings |
 | Shared services not starting | Check volume permissions and network configuration |
 
-### Including Diagnostic Steps in Pipelines
+### Viewing Logs
 
-Add these diagnostic steps to your CI/CD workflow when troubleshooting:
+```bash
+# View logs from a specific environment
+docker compose -p myapp-blue logs
 
-```yaml
-# In your GitHub Actions workflow
-- name: Diagnostic checks
-  uses: appleboy/ssh-action@master
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/myapp
-      
-      # Check which environment is active
-      echo "Active environment:"
-      grep -E "blue|green" nginx.conf || echo "No active environment"
-      
-      # Check container status
-      echo "Container status:"
-      docker ps -a | grep myapp
-      
-      # Check logs
-      echo "Deployment logs:"
-      ls -la logs/
-      cat logs/myapp-*.log | tail -n 50
-      
-      # Check plugin status
-      echo "Plugin status:"
-      ls -la plugins/
-      
-      # Check service registry
-      echo "Service registry:"
-      cat service-registry.json || echo "No service registry"
-      
-      # Check SSL certificates
-      echo "SSL certificates:"
-      ls -la certs/
-```
+# View logs from a specific service
+docker compose -p myapp-blue logs app
 
-### Rollback Plans
-
-Always include rollback steps in your pipeline for when deployments fail:
-
-```yaml
-# In your GitHub Actions workflow
-- name: Deploy with rollback capability
-  uses: appleboy/ssh-action@master
-  if: success()
-  with:
-    host: ${{ secrets.SERVER_HOST }}
-    username: ${{ secrets.SERVER_USER }}
-    key: ${{ secrets.SSH_PRIVATE_KEY }}
-    script: |
-      cd /app/myapp
-      
-      # Attempt deployment
-      if ! ./scripts/bgd-deploy.sh "$VERSION" --app-name=myapp --image-repo=$IMAGE_REPO; then
-        echo "Deployment failed, rolling back..."
-        ./scripts/bgd-rollback.sh --app-name=myapp --force
-        exit 1
-      fi
+# View recent deployment logs
+cat logs/bgd-*.log
 ```
 
 ## Security Best Practices
@@ -1424,29 +729,16 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache curl
-
 # Add a non-root user
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-COPY package.json package-lock.json ./
-RUN npm ci
-
-COPY . .
-RUN npm run build && \
-    # Set proper ownership
-    chown -R appuser:appgroup /app
-
-ENV NODE_ENV=production
+# Set proper ownership
+RUN chown -R appuser:appgroup /app
 
 # Switch to non-root user
 USER appuser
 
-HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
-
-EXPOSE 3000
-CMD ["node", "dist/main"]
+# Rest of your Dockerfile...
 ```
 
 ### CI/CD Security
@@ -1457,56 +749,3 @@ Follow these security best practices in your CI/CD pipelines:
 2. **Limit SSH access**: Use dedicated deployment users with restricted permissions
 3. **Use read-only tokens**: When pulling from Docker registries, use read-only tokens where possible
 4. **Scan images**: Include container security scanning in your pipeline
-5. **Validate deployments**: Always run health checks after deployment to verify success
-6. **Secure plugin arguments**: Use CI/CD secrets for sensitive plugin arguments
-7. **Rotate credentials**: Regularly rotate API keys, database passwords, and other credentials
-
-## Namespace Management
-
-The Blue/Green Deployment System uses proper namespacing to avoid conflicts with user code:
-
-### File Organization
-
-- **Core Files**: All toolkit core files are prefixed with `bgd-` (e.g., `bgd-core.sh`, `bgd-deploy.sh`)
-- **Plugin Files**: All plugin files follow the same convention (e.g., `bgd-db-migrations.sh`)
-- **No Wrapper Scripts**: There are no backward compatibility wrapper scripts
-
-### Function Namespacing
-
-- **All Functions**: All functions use the `bgd_` prefix (e.g., `bgd_log_info()`, `bgd_create_env_file()`)
-- **Plugin Hooks**: All plugin hooks follow the same convention (e.g., `bgd_hook_pre_deploy()`)
-
-### Variable Namespacing
-
-- **User-Facing Variables**: Variables intended for users remain simple (e.g., `APP_NAME`, `VERSION`)
-- **Internal Variables**: Variables used by the toolkit are prefixed with `BGD_` (e.g., `BGD_LOGS_DIR`)
-
-### Directory Management
-
-The toolkit manages these directories:
-- `scripts/`: Contains core scripts
-- `plugins/`: Contains plugin scripts
-- `config/templates/`: Contains configuration templates
-- `logs/`: Contains deployment logs
-- `certs/`: Contains SSL certificates
-
-### Using Toolkit Functions in Custom Scripts
-
-If you need to use toolkit functions in your custom scripts, source the core file:
-
-```bash
-#!/bin/bash
-
-# Source the core script
-source "./scripts/bgd-core.sh"
-
-# Use toolkit functions
-bgd_log_info "Starting custom operation"
-bgd_ensure_directory "./my-custom-dir"
-bgd_check_health "http://localhost:8080/health" 3 5
-
-# Run your custom logic
-# ...
-
-bgd_log_success "Custom operation completed"
-```

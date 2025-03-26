@@ -3,38 +3,72 @@
 # bgd-cutover.sh - Cuts over traffic to a specific environment
 #
 # Usage:
-#   ./cutover.sh [blue|green] [OPTIONS]
+#   ./bgd-cutover.sh [blue|green] [OPTIONS]
 #
-# Arguments:
+# Required Arguments:
 #   [blue|green]           Target environment to cutover to
-#
-# Options:
-#   --app-name=NAME       Application name
-#   --domain-name=DOMAIN  Domain name for multi-domain routing
-#   --keep-old            Don't stop the previous environment
-#   --nginx-port=PORT     Nginx external port
-#   --nginx-ssl-port=PORT Nginx HTTPS port
-#   --blue-port=PORT      Blue environment port
-#   --green-port=PORT     Green environment port
-#   --health-endpoint=PATH Health check endpoint
-#   --health-retries=N    Number of health check retries
-#   --health-delay=SEC    Delay between health checks
 
 set -euo pipefail
 
-# Get script directory
+# Get script directory and load core module
 BGD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Source utility functions
 source "$BGD_SCRIPT_DIR/bgd-core.sh"
+
+# Display help information
+bgd_show_help() {
+  cat << EOL
+=================================================================
+Blue/Green Deployment System - Cutover Script
+=================================================================
+
+USAGE:
+  ./bgd-cutover.sh [blue|green] [OPTIONS]
+
+ARGUMENTS:
+  [blue|green]              Target environment to cutover to (REQUIRED)
+
+REQUIRED OPTIONS:
+  --app-name=NAME           Application name
+
+CONFIGURATION OPTIONS:
+  --domain-name=DOMAIN      Domain name for multi-domain routing
+  --nginx-port=PORT         Nginx external port (default: 80)
+  --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
+  --blue-port=PORT          Blue environment port (default: 8081)
+  --green-port=PORT         Green environment port (default: 8082)
+
+HEALTH CHECK OPTIONS:
+  --health-endpoint=PATH    Health check endpoint (default: /health)
+  --health-retries=N        Number of health check retries (default: 12)
+  --health-delay=SEC        Delay between health checks (default: 5)
+
+ADVANCED OPTIONS:
+  --keep-old                Don't stop the previous environment
+  --notify-enabled          Enable notifications
+
+EXAMPLES:
+  # Complete cutover to green environment
+  ./bgd-cutover.sh green --app-name=myapp
+
+  # Cutover to blue environment while keeping green running
+  ./bgd-cutover.sh blue --app-name=myapp --keep-old
+
+=================================================================
+EOL
+}
 
 # Main cutover function
 bgd_cutover() {
+  # Check for help flag first
+  if [[ "$1" == "--help" ]]; then
+    bgd_show_help
+    return 0
+  fi
+
   # Parse arguments
   if [ $# -lt 1 ] || [[ ! "$1" =~ ^(blue|green)$ ]]; then
-    bgd_log_error "Missing or invalid environment parameter"
-    echo "Usage: $0 [blue|green] [OPTIONS]"
-    echo "Example: $0 green --app-name=myapp"
+    bgd_log "Missing or invalid environment parameter" "error"
+    bgd_show_help
     return 1
   fi
 
@@ -42,40 +76,37 @@ bgd_cutover() {
   shift
 
   # Parse command-line parameters
-  bgd_parse_parameters "$@" || {
-    bgd_log_error "Invalid parameters"
+  bgd_parse_parameters "$@"
+  
+  # Additional validation for required parameters
+  if [ -z "${APP_NAME:-}" ]; then
+    bgd_handle_error "missing_parameter" "APP_NAME"
     return 1
-  }
+  fi
 
-  # Check if deploying to non-active environment
+  bgd_log "Starting cutover to $TARGET_ENV environment for $APP_NAME" "info"
+  
+  # Determine which environment is currently active and which is standby
   read ACTIVE_ENV INACTIVE_ENV <<< $(bgd_get_environments)
 
-  bgd_log_info "Starting cutover to $TARGET_ENV environment for $APP_NAME"
-  
-  # Run pre-cutover hook
-  bgd_run_hook "pre_cutover" "$TARGET_ENV" || {
-    bgd_log_error "Pre-cutover hook failed"
-    return 1
-  }
+  # Get Docker Compose command
+  DOCKER_COMPOSE=$(bgd_get_docker_compose_cmd)
 
-  # Check if target environment matches inactive
+  # Check if target environment matches inactive or active
   if [ "$TARGET_ENV" != "$INACTIVE_ENV" ] && [ "$TARGET_ENV" != "$ACTIVE_ENV" ]; then
-    bgd_log_error "Target environment ($TARGET_ENV) doesn't match either active ($ACTIVE_ENV) or inactive ($INACTIVE_ENV) environment"
+    bgd_handle_error "invalid_parameter" "Target environment ($TARGET_ENV) doesn't match either active ($ACTIVE_ENV) or inactive ($INACTIVE_ENV) environment"
     return 1
   fi
 
   # If target is already active, nothing to do
   if [ "$TARGET_ENV" = "$ACTIVE_ENV" ]; then
-    bgd_log_info "$TARGET_ENV environment is already active. Nothing to do."
+    bgd_log "$TARGET_ENV environment is already active. Nothing to do." "info"
     return 0
   fi
 
-  # Get Docker Compose command
-  DOCKER_COMPOSE=$(bgd_get_docker_compose_cmd)
-
   # Check if target environment is running
-  if ! $DOCKER_COMPOSE -p ${APP_NAME}-${TARGET_ENV} ps 2>/dev/null | grep -q "Up"; then
-    bgd_log_error "Target environment ($TARGET_ENV) is not running!"
+  if ! $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" ps 2>/dev/null | grep -q "Up"; then
+    bgd_handle_error "environment_start_failed" "Target environment ($TARGET_ENV) is not running"
     return 1
   fi
 
@@ -84,16 +115,15 @@ bgd_cutover() {
   HEALTH_URL="http://localhost:${TARGET_PORT}${HEALTH_ENDPOINT}"
 
   if ! bgd_check_health "$HEALTH_URL" "$HEALTH_RETRIES" "$HEALTH_DELAY"; then
-    bgd_log_error "Target environment is NOT healthy! Aborting cutover."
+    bgd_handle_error "health_check_failed" "Target environment is NOT healthy"
     return 1
   fi
 
   # Update nginx to route all traffic to target environment
-  bgd_log_info "Updating nginx to route all traffic to $TARGET_ENV environment..."
+  bgd_log "Updating nginx to route all traffic to $TARGET_ENV environment" "info"
 
   # Use the single environment template
-  TEMPLATE_DIR="${BGD_SCRIPT_DIR}/../config/templates"
-  NGINX_TEMPLATE="${TEMPLATE_DIR}/nginx-single-env.conf.template"
+  NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
 
   if [ -f "$NGINX_TEMPLATE" ]; then
     cat "$NGINX_TEMPLATE" | \
@@ -101,33 +131,34 @@ bgd_cutover() {
       sed -e "s/APP_NAME/$APP_NAME/g" | \
       sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
       sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT:-443}/g" > nginx.conf
-    bgd_log_info "Generated nginx config for $TARGET_ENV environment"
+      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > nginx.conf
+    
+    bgd_log "Generated nginx config for $TARGET_ENV environment" "info"
   else
-    bgd_log_error "Nginx template file not found at $NGINX_TEMPLATE"
+    bgd_handle_error "file_not_found" "Nginx template file not found at $NGINX_TEMPLATE"
     return 1
   fi
 
   # Reload nginx configuration
-  bgd_log_info "Reloading nginx..."
-  $DOCKER_COMPOSE restart nginx || bgd_log_warning "Failed to restart nginx"
+  bgd_log "Reloading nginx" "info"
+  $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
 
   # Stop the previous environment unless --keep-old is specified
   if [ "${KEEP_OLD:-false}" != "true" ]; then
-    bgd_log_info "Stopping inactive $ACTIVE_ENV environment..."
-    $DOCKER_COMPOSE -p ${APP_NAME}-${ACTIVE_ENV} down || {
-      bgd_log_warning "Failed to stop $ACTIVE_ENV environment, continuing anyway"
+    bgd_log "Stopping inactive $ACTIVE_ENV environment" "info"
+    $DOCKER_COMPOSE -p "${APP_NAME}-${ACTIVE_ENV}" down || {
+      bgd_log "Failed to stop $ACTIVE_ENV environment, continuing anyway" "warning"
     }
   else
-    bgd_log_info "Keeping previous environment ($ACTIVE_ENV) running as requested"
+    bgd_log "Keeping previous environment ($ACTIVE_ENV) running as requested" "info"
   fi
 
-  # Run post-cutover hook
-  bgd_run_hook "post_cutover" "$TARGET_ENV" || {
-    bgd_log_warning "Post-cutover hook failed, continuing anyway"
+  # Send notification if enabled
+  if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
+    bgd_send_notification "Cutover to $TARGET_ENV environment completed successfully" "success"
   }
 
-  bgd_log_success "Cutover completed successfully! All traffic is now routed to the $TARGET_ENV environment."
+  bgd_log "Cutover completed successfully! All traffic is now routed to the $TARGET_ENV environment." "success"
   return 0
 }
 
