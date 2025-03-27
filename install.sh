@@ -166,15 +166,36 @@ else
   mkdir -p "$TARGET_DIR/plugins"
 fi
 
-# Force executable permissions for all scripts and plugins
-find "$TARGET_DIR/scripts" -name "*.sh" -exec chmod +x {} \;
-find "$TARGET_DIR/plugins" -name "*.sh" -exec chmod +x {} \;
+# Set executable permissions for all scripts and plugins with verification
+echo "Setting executable permissions for scripts and plugins..."
+set_and_verify_permissions() {
+  local dir="$1"
+  local type="$2"
+  
+  find "$dir" -name "*.sh" -type f | while read -r script; do
+    chmod +x "$script"
+    if [[ -x "$script" ]]; then
+      echo "  ✓ Set executable permission for $(basename "$script") ($type)"
+    else
+      echo "  ⚠ WARNING: Failed to set executable permission for $(basename "$script") ($type)"
+      echo "    You may need to manually run: chmod +x $script"
+    fi
+  done
+}
+
+set_and_verify_permissions "$TARGET_DIR/scripts" "script"
+set_and_verify_permissions "$TARGET_DIR/plugins" "plugin"
 
 echo
 echo "✅ Installation completed successfully!"
-echo "System is ready for deployment with:"
+echo "System is ready for deployment with either:"
+echo "  $TARGET_DIR/deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
+echo "  or"
 echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
 echo
 echo "For multi-container deployment with shared services:"
-echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=your-app-name --setup-shared --domain-name=yourdomain.com"
+echo "  $TARGET_DIR/deploy.sh VERSION --app-name=your-app-name --setup-shared --domain-name=yourdomain.com"
+echo
+echo "If you still encounter permission issues, please run:"
+echo "  chmod -R +x $TARGET_DIR/scripts/*.sh $TARGET_DIR/plugins/*.sh"
 echo
