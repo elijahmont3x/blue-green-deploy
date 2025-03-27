@@ -66,7 +66,8 @@ bgd_cleanup_orphaned_containers() {
     if [ "${DRY_RUN:-false}" = "true" ]; then
       bgd_log "Would remove orphaned containers" "info"
     else
-      docker rm $orphaned_containers
+      # Using xargs for safer handling of container names
+      echo "$orphaned_containers" | xargs -r docker rm || bgd_log "Failed to remove some containers" "warning"
       bgd_log "Removed orphaned containers" "success"
     fi
   else
@@ -132,7 +133,7 @@ bgd_cleanup() {
   if [[ "$1" == "--help" ]]; then
     bgd_show_help
     return 0
-  }
+  fi
 
   # Parse command-line parameters
   bgd_parse_parameters "$@"
@@ -141,7 +142,7 @@ bgd_cleanup() {
   if [ -z "${APP_NAME:-}" ]; then
     bgd_handle_error "missing_parameter" "APP_NAME"
     return 1
-  }
+  fi
 
   bgd_log "Starting cleanup for $APP_NAME" "info"
 
@@ -280,7 +281,7 @@ bgd_cleanup() {
   # Send notification if enabled
   if [ "${NOTIFY_ENABLED:-false}" = "true" ] && [ $CLEANED_COUNT -gt 0 ] && [ "${DRY_RUN:-false}" != "true" ]; then
     bgd_send_notification "Cleaned up $CLEANED_COUNT environment(s) for $APP_NAME" "info"
-  }
+  fi
   
   return 0
 }

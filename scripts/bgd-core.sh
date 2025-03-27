@@ -529,18 +529,45 @@ bgd_get_environments() {
 bgd_is_port_available() {
   local port="$1"
   
-  # Check if port is in use with netstat
-  if command -v netstat >/dev/null 2>&1; then
-    if netstat -tuln | grep -q ":$port "; then
-      return 1
-    fi
-  # Fallback to direct socket test
-  elif ! (echo >/dev/tcp/localhost/$port) 2>/dev/null; then
-    return 0
-  else
+  # Validate port number first
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    bgd_log "Invalid port number: $port" "error"
     return 1
   fi
   
+  # Primary approach: Try direct socket test
+  # If we can connect, port is in use (return 1/false)
+  # If connection fails, port is available (return 0/true)
+  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
+    # Connection successful, port is in use
+    return 1
+  fi
+  
+  # Fallback 1: Use netstat if available
+  if command -v netstat &> /dev/null; then
+    if netstat -tuln | grep -q ":$port "; then
+      # Port is in use
+      return 1
+    fi
+  fi
+  
+  # Fallback 2: Use ss if available
+  if command -v ss &> /dev/null; then
+    if ss -tuln | grep -q ":$port "; then
+      # Port is in use
+      return 1
+    fi
+  fi
+  
+  # Fallback 3: Use lsof if available
+  if command -v lsof &> /dev/null; then
+    if lsof -i ":$port" &> /dev/null; then
+      # Port is in use
+      return 1
+    fi
+  fi
+  
+  # All tests indicate port is available
   return 0
 }
 

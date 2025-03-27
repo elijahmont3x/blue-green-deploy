@@ -156,7 +156,7 @@ bgd_cutover() {
   # Send notification if enabled
   if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
     bgd_send_notification "Cutover to $TARGET_ENV environment completed successfully" "success"
-  }
+  fi
 
   bgd_log "Cutover completed successfully! All traffic is now routed to the $TARGET_ENV environment." "success"
   return 0

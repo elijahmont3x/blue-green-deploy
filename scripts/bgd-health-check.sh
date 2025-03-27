@@ -53,7 +53,7 @@ bgd_health_check_main() {
   if [[ "$1" == "--help" ]]; then
     bgd_show_help
     return 0
-  }
+  fi
 
   # Default endpoint from first argument or default value
   ENDPOINT=${1:-"http://localhost:3000/health"}

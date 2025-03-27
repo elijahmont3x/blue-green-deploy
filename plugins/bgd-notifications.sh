@@ -24,7 +24,7 @@ bgd_send_notification() {
   # Skip if notifications are disabled
   if [ "${NOTIFY_ENABLED:-false}" != "true" ]; then
     return 0
-  }
+  fi
   
   # Add emoji based on level
   local emoji=""

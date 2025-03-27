@@ -52,7 +52,7 @@ bgd_create_db_url() {
   local db_port="$5"
   local db_name="$6"
   
-  echo "${db_type}://${db_user}:${db_password}@${db_host}:${db_port}/${db_name}"
+  printf "%s://%s:%s@%s:%s/%s" "$db_type" "$db_user" "$db_password" "$db_host" "$db_port" "$db_name"
 }
 
 # Backup the database
@@ -245,7 +245,7 @@ bgd_hook_pre_deploy() {
   if [ -z "${DATABASE_URL:-}" ]; then
     bgd_log "No DATABASE_URL provided, skipping database operations" "info"
     return 0
-  }
+  fi
   
   # Backup database before deployment
   bgd_backup_database "$version" "${TARGET_ENV:-unknown}" || {
@@ -259,7 +259,7 @@ bgd_hook_pre_deploy() {
       bgd_log "Shadow database creation failed" "error"
       return 1
     }
-  }
+  fi
   
   return 0
 }
@@ -272,13 +272,13 @@ bgd_hook_post_deploy() {
   if [ "${SKIP_MIGRATIONS:-false}" = "true" ]; then
     bgd_log "Database migrations are disabled, skipping post-deployment database tasks" "info"
     return 0
-  }
+  fi
   
   # Skip if no DATABASE_URL is provided
   if [ -z "${DATABASE_URL:-}" ]; then
     bgd_log "No DATABASE_URL provided, skipping database operations" "info"
     return 0
-  }
+  fi
   
   # Apply migrations to shadow database if enabled
   if [ "${DB_SHADOW_ENABLED:-true}" = "true" ]; then
@@ -292,7 +292,7 @@ bgd_hook_post_deploy() {
       bgd_log "Shadow database migrations failed" "error"
       return 1
     fi
-  }
+  fi
   
   return 0
 }
@@ -301,7 +301,7 @@ bgd_hook_pre_rollback() {
   # Prepare for database rollback if needed
   if [ -z "${DATABASE_URL:-}" ]; then
     return 0
-  }
+  fi
   
   bgd_log "Preparing for database rollback" "info"
   
@@ -320,7 +320,7 @@ bgd_hook_post_rollback() {
   # If we don't have a database URL, nothing to do
   if [ -z "${DATABASE_URL:-}" ]; then
     return 0
-  }
+  fi
   
   bgd_log "Database rollback not required for simple environment switch" "info"
   

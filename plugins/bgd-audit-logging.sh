@@ -136,7 +136,7 @@ bgd_cleanup_audit_logs() {
       bgd_log "Unable to clean up audit logs (jq not available or date command failed)" "warning"
       rm -f "$tmp_file"
     fi
-  }
+  fi
   
   return 0
 }

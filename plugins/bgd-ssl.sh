@@ -86,7 +86,7 @@ bgd_obtain_ssl_certificates() {
   if bgd_is_ci_environment; then
     bgd_log "CI environment detected, skipping SSL certificate generation" "warning"
     return 0
-  }
+  fi
   
   bgd_log "Obtaining SSL certificates for $domain" "info"
   
@@ -94,7 +94,7 @@ bgd_obtain_ssl_certificates() {
   if [ -z "$email" ]; then
     bgd_log "CERTBOT_EMAIL is required for SSL certificate generation" "error"
     return 1
-  }
+  fi
   
   # Install dependencies
   if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
@@ -168,19 +168,19 @@ bgd_setup_nginx_ssl() {
   if ! bgd_check_certificates "$domain"; then
     bgd_log "SSL certificates not found, unable to configure Nginx for SSL" "error"
     return 1
-  }
+  fi
   
   # Get the appropriate template
   local template="$template_dir/nginx-multi-domain.conf.template"
   if [ ! -f "$template" ]; then
     bgd_log "Multi-domain template not found, using dual-env template" "warning"
     template="$template_dir/nginx-dual-env.conf.template"
-  }
+  fi
   
   if [ ! -f "$template" ]; then
-    bgd_log "No Nginx template found" "error"
+    bgd_log "No Nginx template found at $template_dir" "error"
     return 1
-  }
+  fi
   
   # Already setup in core functionality
   bgd_log "Nginx SSL configuration is handled by core deployment process" "info"
@@ -198,7 +198,7 @@ bgd_setup_auto_renewal() {
     if bgd_is_ci_environment; then
       bgd_log "CI environment detected, skipping renewal setup" "warning"
       return 0
-    }
+    fi
     
     # Create renewal script
     cat > renew-ssl.sh << 'EOL'
@@ -238,7 +238,7 @@ EOL
     rm mycron
     
     bgd_log "Automatic SSL renewal configured" "success"
-  }
+  fi
   
   return 0
 }
@@ -258,7 +258,7 @@ bgd_hook_pre_deploy() {
         bgd_log "Continuing deployment without SSL" "warning"
       }
     fi
-  }
+  fi
   
   return 0
 }
@@ -274,7 +274,7 @@ bgd_hook_post_deploy() {
     else
       bgd_log "SSL certificates not available, using HTTP only" "warning"
     fi
-  }
+  fi
   
   return 0
 }

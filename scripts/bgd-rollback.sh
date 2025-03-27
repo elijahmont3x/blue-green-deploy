@@ -60,7 +60,7 @@ bgd_rollback() {
   if [[ "$1" == "--help" ]]; then
     bgd_show_help
     return 0
-  }
+  fi
 
   # Parse command-line parameters
   bgd_parse_parameters "$@"
@@ -69,7 +69,7 @@ bgd_rollback() {
   if [ -z "${APP_NAME:-}" ]; then
     bgd_handle_error "missing_parameter" "APP_NAME"
     return 1
-  }
+  fi
 
   bgd_log "Starting rollback procedure for $APP_NAME" "info"
 
@@ -82,7 +82,7 @@ bgd_rollback() {
   if ! $DOCKER_COMPOSE -p "${APP_NAME}-${ROLLBACK_ENV}" ps 2>/dev/null | grep -q "Up\|Exit"; then
     bgd_handle_error "environment_start_failed" "Rollback environment ($ROLLBACK_ENV) doesn't exist"
     return 1
-  }
+  fi
 
   bgd_log "Active environment: $ACTIVE_ENV, rolling back to: $ROLLBACK_ENV" "info"
 
@@ -96,8 +96,8 @@ bgd_rollback() {
     else
       bgd_handle_error "file_not_found" "Rollback environment configuration not found at .env.${ROLLBACK_ENV}"
       return 1
-    }
-  }
+    fi
+  fi
 
   # Check health of rollback environment
   ROLLBACK_PORT=$([[ "$ROLLBACK_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
@@ -109,8 +109,8 @@ bgd_rollback() {
     else
       bgd_handle_error "health_check_failed" "Rollback environment is NOT healthy"
       return 1
-    }
-  }
+    fi
+  fi
 
   # Update nginx to route traffic to rollback environment
   bgd_log "Updating nginx to route traffic to $ROLLBACK_ENV environment" "info"
@@ -130,7 +130,7 @@ bgd_rollback() {
   else
     bgd_handle_error "file_not_found" "Nginx template file not found at $NGINX_TEMPLATE"
     return 1
-  }
+  fi
 
   # Reload nginx configuration
   bgd_log "Reloading nginx" "info"
@@ -139,7 +139,7 @@ bgd_rollback() {
   # Send notification if enabled
   if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
     bgd_send_notification "Rollback to $ROLLBACK_ENV environment completed" "warning"
-  }
+  fi
 
   bgd_log "Rollback completed successfully! All traffic is now routed to the $ROLLBACK_ENV environment." "success"
   return 0
