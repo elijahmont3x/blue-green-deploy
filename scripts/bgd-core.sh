@@ -401,7 +401,7 @@ bgd_validate_routing_parameters() {
       # Skip empty mappings
       if [ -z "$mapping" ]; then
         continue
-      }
+      fi
       
       # Check format (path:service:port)
       if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-/]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
@@ -425,7 +425,7 @@ bgd_validate_routing_parameters() {
       # Skip empty mappings
       if [ -z "$mapping" ]; then
         continue
-      }
+      fi
       
       # Check format (subdomain:service:port)
       if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
