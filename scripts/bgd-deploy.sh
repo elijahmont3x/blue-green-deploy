@@ -244,6 +244,7 @@ EOL
     GREEN_WEIGHT_VALUE=10
   fi
   
+  # Create the nginx.conf file before starting any containers
   cat "$NGINX_TEMPLATE" | \
     sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
     sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
@@ -251,6 +252,11 @@ EOL
     sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
     sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
     sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+
+  if [ ! -f "nginx.conf" ] || [ ! -s "nginx.conf" ]; then
+    bgd_handle_error "file_not_found" "Failed to create nginx.conf file"
+    return 1
+  fi
 
   # Create directory for SSL certificates if it doesn't exist
   bgd_ensure_directory "certs"
