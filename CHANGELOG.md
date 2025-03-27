@@ -2,7 +2,7 @@
 
 All notable changes to the Blue/Green Deployment toolkit are documented in this file.
 
-## [1.0.1] - 2025-03-27
+## [1.0.0] - 2025-03-27
 
 ### Enhancements
 - **Complete Redesign of Nginx Templating System**:  

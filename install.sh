@@ -24,17 +24,26 @@ APP_NAME=${1:-"app"}
 
 echo "Initializing blue/green deployment system for $APP_NAME"
 
-# Create essential directory structure
-mkdir -p "scripts"
-mkdir -p "config/templates"
-mkdir -p "plugins"
-mkdir -p "logs"
-mkdir -p "certs"
-mkdir -p "credentials"
-mkdir -p "docs"
-
-# Define current script directory
+# Get script's absolute directory path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Determine the target directory
+if [[ "$APP_NAME" == /* ]]; then
+  # If APP_NAME is an absolute path, use it as the target directory
+  TARGET_DIR="$APP_NAME"
+else
+  # If APP_NAME is not an absolute path, create target in current directory
+  TARGET_DIR="$(pwd)/$APP_NAME"
+fi
+
+# Create essential directory structure in the target directory
+mkdir -p "$TARGET_DIR/scripts"
+mkdir -p "$TARGET_DIR/config/templates"
+mkdir -p "$TARGET_DIR/plugins"
+mkdir -p "$TARGET_DIR/logs"
+mkdir -p "$TARGET_DIR/certs"
+mkdir -p "$TARGET_DIR/credentials"
+mkdir -p "$TARGET_DIR/docs"
 
 # Define core scripts (namespaced implementation files)
 CORE_SCRIPTS=(
@@ -51,11 +60,17 @@ CORE_SCRIPTS=(
 echo "Installing core implementation files..."
 for script in "${CORE_SCRIPTS[@]}"; do
   script_path="$SCRIPT_DIR/scripts/$script"
+  target_path="$TARGET_DIR/scripts/$script"
   
-  if [ -f "$script_path" ]; then
-    cp "$script_path" "scripts/"
-    chmod +x "scripts/$script"
+  # Skip if source and target are the same file
+  if [ -f "$script_path" ] && [ "$script_path" != "$target_path" ]; then
+    cp "$script_path" "$target_path"
+    chmod +x "$target_path"
     echo "  ✓ $script"
+  elif [ "$script_path" = "$target_path" ]; then
+    # If source and target are the same, just ensure it's executable
+    chmod +x "$script_path"
+    echo "  ✓ $script (already in place)"
   else
     echo "  ✗ $script not found (skipping)"
   fi
@@ -72,10 +87,14 @@ ESSENTIAL_TEMPLATES=(
 echo "Installing essential configuration templates..."
 for template in "${ESSENTIAL_TEMPLATES[@]}"; do
   template_path="$SCRIPT_DIR/config/templates/$template"
+  target_path="$TARGET_DIR/config/templates/$template"
   
-  if [ -f "$template_path" ]; then
-    cp "$template_path" "config/templates/"
+  # Skip if source and target are the same file
+  if [ -f "$template_path" ] && [ "$template_path" != "$target_path" ]; then
+    cp "$template_path" "$target_path"
     echo "  ✓ $template"
+  elif [ "$template_path" = "$target_path" ]; then
+    echo "  ✓ $template (already in place)"
   else
     echo "  ✗ $template not found (skipping)"
   fi
@@ -90,19 +109,28 @@ if [ -d "$PLUGIN_DIR" ]; then
   for plugin in "$PLUGIN_DIR"/bgd-*.sh; do
     if [ -f "$plugin" ]; then
       plugin_name=$(basename "$plugin")
-      cp "$plugin" "plugins/"
-      chmod +x "plugins/$plugin_name"
-      echo "  ✓ $plugin_name (plugin)"
+      target_path="$TARGET_DIR/plugins/$plugin_name"
+      
+      # Skip if source and target are the same file
+      if [ "$plugin" != "$target_path" ]; then
+        cp "$plugin" "$target_path"
+        chmod +x "$target_path"
+        echo "  ✓ $plugin_name (plugin)"
+      else
+        # If source and target are the same, just ensure it's executable
+        chmod +x "$plugin"
+        echo "  ✓ $plugin_name (plugin, already in place)"
+      fi
     fi
   done
 else
   echo "No plugins directory found, skipping plugin installation."
-  mkdir -p "plugins"
+  mkdir -p "$TARGET_DIR/plugins"
 fi
 
 # Create .gitignore file
 echo "Creating .gitignore file..."
-cat > ".gitignore" << EOL
+cat > "$TARGET_DIR/.gitignore" << EOL
 # Blue/Green Deployment specific
 logs/
 certs/
@@ -135,8 +163,8 @@ EOL
 echo
 echo "✅ Installation completed successfully!"
 echo "System is ready for deployment with:"
-echo "  ./scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
+echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
 echo
 echo "For multi-container deployment with shared services:"
-echo "  ./scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
+echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
 echo
