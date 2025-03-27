@@ -166,36 +166,64 @@ else
   mkdir -p "$TARGET_DIR/plugins"
 fi
 
-# Set executable permissions for all scripts and plugins with verification
-echo "Setting executable permissions for scripts and plugins..."
-set_and_verify_permissions() {
-  local dir="$1"
+# More robust permission handling
+echo "Setting executable permissions and validating files..."
+
+# Function to set permissions and validate script
+set_permissions_and_validate() {
+  local file="$1"
   local type="$2"
   
-  find "$dir" -name "*.sh" -type f | while read -r script; do
-    chmod +x "$script"
-    if [[ -x "$script" ]]; then
-      echo "  ✓ Set executable permission for $(basename "$script") ($type)"
-    else
-      echo "  ⚠ WARNING: Failed to set executable permission for $(basename "$script") ($type)"
-      echo "    You may need to manually run: chmod +x $script"
-    fi
-  done
+  # Set executable bits
+  chmod +x "$file"
+  
+  # Validate the script is executable
+  if [[ ! -x "$file" ]]; then
+    echo "  ⚠ WARNING: Failed to set executable permission for $(basename "$file") ($type)"
+    echo "    You may need to manually run: sudo chmod +x $file"
+    return 1
+  fi
+  
+  # Validate the script has proper line endings (important for cross-platform)
+  if grep -q $'\r' "$file"; then
+    echo "  ⚠ WARNING: $(basename "$file") has Windows line endings which may cause issues"
+    echo "    Converting to Unix line endings..."
+    # Create a temp file
+    local temp_file="$(mktemp)"
+    tr -d '\r' < "$file" > "$temp_file"
+    mv "$temp_file" "$file"
+    chmod +x "$file"  # Reset permissions after move
+  fi
+  
+  echo "  ✓ Validated $(basename "$file") ($type)"
+  return 0
 }
 
-set_and_verify_permissions "$TARGET_DIR/scripts" "script"
-set_and_verify_permissions "$TARGET_DIR/plugins" "plugin"
+# Process core scripts with robust validation
+echo "Validating core scripts..."
+for script in "${CORE_SCRIPTS[@]}"; do
+  script_path="$TARGET_DIR/scripts/$script"
+  if [ -f "$script_path" ]; then
+    set_permissions_and_validate "$script_path" "core"
+  fi
+done
+
+# Process plugin scripts with validation
+echo "Validating plugins..."
+find "$TARGET_DIR/plugins" -name "bgd-*.sh" -type f | while read -r plugin; do
+  set_permissions_and_validate "$plugin" "plugin"
+done
 
 echo
 echo "✅ Installation completed successfully!"
-echo "System is ready for deployment with either:"
-echo "  $TARGET_DIR/deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
-echo "  or"
-echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
+echo "System is ready for deployment with:"
+echo "  cd $TARGET_DIR && ./scripts/bgd-deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
 echo
 echo "For multi-container deployment with shared services:"
-echo "  $TARGET_DIR/deploy.sh VERSION --app-name=your-app-name --setup-shared --domain-name=yourdomain.com"
+echo "  cd $TARGET_DIR && ./scripts/bgd-deploy.sh VERSION --app-name=your-app-name --setup-shared --domain-name=yourdomain.com"
 echo
-echo "If you still encounter permission issues, please run:"
-echo "  chmod -R +x $TARGET_DIR/scripts/*.sh $TARGET_DIR/plugins/*.sh"
+echo "If you encounter permission issues, please run:"
+echo "  cd $TARGET_DIR && ./scripts/bgd-verify.sh"
+echo
+echo "Commands should be run from within the installation directory for proper path resolution."
 echo
