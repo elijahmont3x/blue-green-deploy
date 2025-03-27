@@ -166,53 +166,10 @@ else
   mkdir -p "$TARGET_DIR/plugins"
 fi
 
-# More robust permission handling
-echo "Setting executable permissions and validating files..."
-
-# Function to set permissions and validate script
-set_permissions_and_validate() {
-  local file="$1"
-  local type="$2"
-  
-  # Set executable bits
-  chmod +x "$file"
-  
-  # Validate the script is executable
-  if [[ ! -x "$file" ]]; then
-    echo "  ⚠ WARNING: Failed to set executable permission for $(basename "$file") ($type)"
-    echo "    You may need to manually run: sudo chmod +x $file"
-    return 1
-  fi
-  
-  # Validate the script has proper line endings (important for cross-platform)
-  if grep -q $'\r' "$file"; then
-    echo "  ⚠ WARNING: $(basename "$file") has Windows line endings which may cause issues"
-    echo "    Converting to Unix line endings..."
-    # Create a temp file
-    local temp_file="$(mktemp)"
-    tr -d '\r' < "$file" > "$temp_file"
-    mv "$temp_file" "$file"
-    chmod +x "$file"  # Reset permissions after move
-  fi
-  
-  echo "  ✓ Validated $(basename "$file") ($type)"
-  return 0
-}
-
-# Process core scripts with robust validation
-echo "Validating core scripts..."
-for script in "${CORE_SCRIPTS[@]}"; do
-  script_path="$TARGET_DIR/scripts/$script"
-  if [ -f "$script_path" ]; then
-    set_permissions_and_validate "$script_path" "core"
-  fi
-done
-
-# Process plugin scripts with validation
-echo "Validating plugins..."
-find "$TARGET_DIR/plugins" -name "bgd-*.sh" -type f | while read -r plugin; do
-  set_permissions_and_validate "$plugin" "plugin"
-done
+# Set execute permissions on all scripts in the scripts directory
+find "$TARGET_DIR/scripts" -name "*.sh" -type f -exec chmod +x {} \;
+# Set execute permissions on all plugins
+find "$TARGET_DIR/plugins" -name "*.sh" -type f -exec chmod +x {} \;
 
 echo
 echo "✅ Installation completed successfully!"
