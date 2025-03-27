@@ -4,10 +4,10 @@
 #
 # Usage:
 #   chmod +x ./install.sh  # Make this script executable first
-#   ./install.sh [APP_NAME] [OPTIONS]
+#   ./install.sh [INSTALL_DIR] [OPTIONS]
 #
 # Arguments:
-#   APP_NAME              Name of your application (default: "app")
+#   INSTALL_DIR           Directory where the system will be installed (default: current directory)
 #
 # Options:
 #   --force-plugins       Force overwrite of existing plugins
@@ -22,35 +22,44 @@ if [[ ! -x "$0" ]]; then
   exit $?         # Should not reach here
 fi
 
-# Parse arguments
+# Initialize variables
+INSTALL_DIR="$(pwd)"   # default installation directory
 FORCE_PLUGINS=false
-APP_NAME="app"  # Default value
 
-# Process arguments
-for arg in "$@"; do
-  if [[ "$arg" == "--force-plugins" ]]; then
-    FORCE_PLUGINS=true
-  elif [[ "$arg" != --* ]]; then
-    # If not a flag, treat as APP_NAME
-    APP_NAME="$arg"
-  fi
+# Parse arguments
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --force-plugins=*)
+      force_val="${1#*=}"
+      if [[ "$force_val" =~ ^(true|1)$ ]]; then
+        FORCE_PLUGINS=true
+      else
+        FORCE_PLUGINS=false
+      fi
+      shift
+      ;;
+    --*)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
+    *)
+      # The first non-option argument is the installation directory
+      INSTALL_DIR="$1"
+      shift
+      ;;
+  esac
 done
 
-echo "Initializing blue/green deployment system for $APP_NAME"
-if [ "$FORCE_PLUGINS" = true ]; then
-  echo "Force plugin overwrite is enabled"
-fi
+echo "Initializing blue/green deployment system in directory: $INSTALL_DIR"
 
 # Get script's absolute directory path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Determine the target directory
-if [[ "$APP_NAME" == /* ]]; then
-  # If APP_NAME is an absolute path, use it as the target directory
-  TARGET_DIR="$APP_NAME"
+# Determine the target directory using INSTALL_DIR (absolute or relative)
+if [[ "$INSTALL_DIR" == /* ]]; then
+  TARGET_DIR="$INSTALL_DIR"
 else
-  # If APP_NAME is not an absolute path, create target in current directory
-  TARGET_DIR="$(pwd)/$APP_NAME"
+  TARGET_DIR="$(pwd)/$INSTALL_DIR"
 fi
 
 # Create essential directory structure in the target directory
@@ -73,21 +82,17 @@ CORE_SCRIPTS=(
   "bgd-nginx-template.sh"
 )
 
-# Copy core scripts and ensure they're all executable
+# Copy core scripts
 echo "Installing core implementation files..."
 for script in "${CORE_SCRIPTS[@]}"; do
   script_path="$SCRIPT_DIR/scripts/$script"
   target_path="$TARGET_DIR/scripts/$script"
   
   if [ -f "$script_path" ]; then
-    # Check if source and target are the same file
     if [ "$script_path" != "$target_path" ]; then
       cp "$script_path" "$target_path"
-      chmod +x "$target_path"
       echo "  ✓ $script"
     else
-      # If source and target are the same, just ensure it's executable
-      chmod +x "$script_path"
       echo "  ✓ $script (already in place)"
     fi
   else
@@ -109,7 +114,6 @@ for template in "${ESSENTIAL_TEMPLATES[@]}"; do
   target_path="$TARGET_DIR/config/templates/$template"
   
   if [ -f "$template_path" ]; then
-    # Check if source and target are the same file
     if [ "$template_path" != "$target_path" ]; then
       cp "$template_path" "$target_path"
       echo "  ✓ $template"
@@ -148,17 +152,12 @@ if [ -d "$PLUGIN_DIR" ]; then
       if [ "$install_plugin" = true ]; then
         if [ "$plugin" != "$target_path" ]; then
           cp "$plugin" "$target_path"
-          chmod +x "$target_path"
           echo "  $status_message"
         else
-          # If source and target are the same, just ensure it's executable
-          chmod +x "$plugin"
           echo "  ✓ $plugin_name (plugin, already in place)"
         fi
       else
         echo "  $status_message"
-        # Ensure existing plugin is executable
-        chmod +x "$target_path"
       fi
     fi
   done
@@ -167,47 +166,15 @@ else
   mkdir -p "$TARGET_DIR/plugins"
 fi
 
-# Create .gitignore file
-echo "Creating .gitignore file..."
-if [ ! -f "$TARGET_DIR/.gitignore" ]; then
-  cat > "$TARGET_DIR/.gitignore" << EOL
-# Blue/Green Deployment specific
-logs/
-certs/
-credentials/
-*.log
-service-registry.json
-.env.*
-renew-ssl.sh
-
-# Terraform
-.terraform/
-*.tfstate
-*.tfstate.backup
-*.tfvars
-
-# Environment
-.env
-.venv
-env/
-venv/
-ENV/
-
-# Temporary files
-*.swp
-*.swo
-.DS_Store
-tmp/
-EOL
-else
-  echo ".gitignore already exists, not overwriting"
-fi
+# Force executable permissions for all scripts and plugins
+find "$TARGET_DIR/scripts" -name "*.sh" -exec chmod +x {} \;
+find "$TARGET_DIR/plugins" -name "*.sh" -exec chmod +x {} \;
 
 echo
 echo "✅ Installation completed successfully!"
 echo "System is ready for deployment with:"
-echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME [OPTIONS]"
+echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=your-app-name [OPTIONS]"
 echo
 echo "For multi-container deployment with shared services:"
-echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=$APP_NAME --setup-shared --domain-name=yourdomain.com"
+echo "  $TARGET_DIR/scripts/bgd-deploy.sh VERSION --app-name=your-app-name --setup-shared --domain-name=yourdomain.com"
 echo
