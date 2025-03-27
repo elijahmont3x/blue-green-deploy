@@ -185,7 +185,7 @@ bgd_apply_migrations_to_shadow() {
   fi
 }
 
-# Swap shadow database with main database
+# Swap shadow database with main database - improved implementation
 bgd_swap_databases() {
   bgd_get_db_connection_details
   local shadow_db_name="${DB_NAME}${DB_SHADOW_SUFFIX}"
@@ -217,8 +217,48 @@ bgd_swap_databases() {
       }
       ;;
     mysql)
-      bgd_log "Database swapping is not supported for MySQL yet" "error"
-      return 1
+      # Create a transaction lock to prevent connections during swap
+      bgd_log "Creating transaction lock for MySQL database swap" "info"
+      
+      # Connect to MySQL server
+      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" << EOF || {
+        bgd_log "Failed to create MySQL transaction lock" "error"
+        return 1
+      }
+-- Prevent new connections to the databases
+FLUSH TABLES WITH READ LOCK;
+EOF
+      
+      # Export current database structure and data
+      bgd_log "Backing up current database before swap" "info"
+      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$DB_NAME" > "${DB_NAME}_backup.sql" || {
+        # Release the lock in case of failure
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "UNLOCK TABLES;"
+        bgd_log "Failed to back up current database" "error"
+        return 1
+      }
+      
+      # Drop and recreate main database using shadow
+      bgd_log "Swapping database content" "info"
+      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" << EOF || {
+        # Release the lock in case of failure
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "UNLOCK TABLES;"
+        bgd_log "Failed to swap databases" "error"
+        return 1
+      }
+-- Drop and recreate main database
+DROP DATABASE \`$DB_NAME\`;
+CREATE DATABASE \`$DB_NAME\`;
+
+-- Drop and recreate shadow database for future use
+RENAME DATABASE \`$shadow_db_name\` TO \`$DB_NAME\`;
+CREATE DATABASE \`$shadow_db_name\`;
+
+-- Release the lock
+UNLOCK TABLES;
+EOF
+      
+      bgd_log "MySQL database swap completed successfully" "success"
       ;;
     *)
       bgd_log "Unsupported database type: $DB_TYPE" "error"

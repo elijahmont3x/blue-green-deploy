@@ -361,52 +361,6 @@ EOL
   return 0
 }
 
-# Create secure environment file
-bgd_create_secure_env_file() {
-  local env_name="$1"
-  local env_file=".env.${env_name}"
-  local port="$2"
-
-  # Create or overwrite the environment file
-  : > "$env_file"
-
-  # Add common environment variables
-  echo "ENV_NAME=${env_name}" >> "$env_file"
-  echo "PORT=${port}" >> "$env_file"
-
-  # Add any environment variables with secure handling
-  local sensitive_patterns="PASSWORD|SECRET|KEY|TOKEN|DATABASE_URL"
-  
-  # Export explicitly defined sensitive variables
-  if [ -n "${DATABASE_URL:-}" ]; then
-    bgd_log "Adding database connection string to environment file" "debug"
-    echo "DATABASE_URL=${DATABASE_URL}" >> "$env_file"
-  fi
-  
-  if [ -n "${REDIS_URL:-}" ]; then
-    bgd_log "Adding Redis connection string to environment file" "debug"
-    echo "REDIS_URL=${REDIS_URL}" >> "$env_file"
-  fi
-  
-  # Add any DB_* or APP_* environment variables
-  env | grep -E '^(DB_|APP_)' | while read -r line; do
-    # Check if it's a sensitive variable based on name
-    if [[ "$line" =~ $sensitive_patterns ]]; then
-      bgd_log "Adding sensitive environment variable to file" "debug"
-    fi
-    echo "$line" >> "$env_file"
-  done
-  
-  # Add plugin-registered variables
-  for param in "${!BGD_PLUGIN_ARGS[@]}"; do
-    if [[ "$param" =~ ^(DB_|APP_|SERVICE_|SSL_|METRICS_|AUTH_) ]]; then
-      if [ -n "${!param:-}" ]; then
-        echo "${param}=${!param}" >> "$env_file"
-      fi
-    fi
-  done
-}
-
 # If this script is being executed directly (not sourced)
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   bgd_deploy "$@"

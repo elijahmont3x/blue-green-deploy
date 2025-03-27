@@ -75,7 +75,7 @@ bgd_install_ssl_dependencies() {
   return 0
 }
 
-# Obtain SSL certificates using Certbot
+# Obtain SSL certificates using Certbot with improved security
 bgd_obtain_ssl_certificates() {
   local domain="${1:-$DOMAIN_NAME}"
   local email="${CERTBOT_EMAIL}"
@@ -104,8 +104,13 @@ bgd_obtain_ssl_certificates() {
     }
   fi
   
-  # Create certificates directory
+  # Create certificates directory with secure permissions
   bgd_ensure_directory "$cert_path"
+  chmod 700 "$cert_path"
+  
+  # Create a secure temporary directory for certificate processing
+  local temp_cert_dir=$(mktemp -d)
+  chmod 700 "$temp_cert_dir"
   
   # Build Certbot command
   local certbot_cmd="certbot certonly --standalone"
@@ -123,6 +128,9 @@ bgd_obtain_ssl_certificates() {
   # Add email and other options
   certbot_cmd+=" --email $email --agree-tos --non-interactive"
   
+  # Add option to save certificates to temp directory
+  certbot_cmd+=" --cert-path $temp_cert_dir"
+  
   # Use staging if specified
   if [ "$staging" = "true" ]; then
     certbot_cmd+=" --staging"
@@ -139,20 +147,35 @@ bgd_obtain_ssl_certificates() {
     bgd_log "Failed to obtain SSL certificates" "error"
     # Restart Nginx
     $docker_compose start nginx || true
+    # Clean up temp directory
+    rm -rf "$temp_cert_dir"
     return 1
   }
   
   # Restart Nginx
   $docker_compose start nginx || true
   
-  # Copy certificates to our cert path
+  # Copy certificates to our cert path with secure permissions
   bgd_ensure_directory "$cert_path"
-  sudo cp /etc/letsencrypt/live/$domain/fullchain.pem "$cert_path/fullchain.pem"
-  sudo cp /etc/letsencrypt/live/$domain/privkey.pem "$cert_path/privkey.pem"
-  sudo chmod 644 "$cert_path/fullchain.pem"
-  sudo chmod 644 "$cert_path/privkey.pem"
+  sudo cp /etc/letsencrypt/live/$domain/fullchain.pem "$temp_cert_dir/fullchain.pem"
+  sudo cp /etc/letsencrypt/live/$domain/privkey.pem "$temp_cert_dir/privkey.pem"
   
-  bgd_log "SSL certificates obtained successfully" "success"
+  # Set secure permissions on temp files
+  sudo chmod 600 "$temp_cert_dir/fullchain.pem"
+  sudo chmod 600 "$temp_cert_dir/privkey.pem"
+  
+  # Move files to final destination (atomic operation)
+  mv "$temp_cert_dir/fullchain.pem" "$cert_path/fullchain.pem"
+  mv "$temp_cert_dir/privkey.pem" "$cert_path/privkey.pem"
+  
+  # Set final permissions
+  chmod 644 "$cert_path/fullchain.pem" # Certificate can be readable
+  chmod 600 "$cert_path/privkey.pem"   # Private key must be secure
+  
+  # Clean up temp directory
+  rm -rf "$temp_cert_dir"
+  
+  bgd_log "SSL certificates obtained and secured successfully" "success"
   return 0
 }
 

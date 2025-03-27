@@ -390,7 +390,62 @@ validate_positive_integer() {
   return 0
 }
 
-# Validate parameters
+# Enhanced input validation for routing parameters
+bgd_validate_routing_parameters() {
+  bgd_log "Validating routing parameters" "info"
+  
+  # Validate paths parameter
+  if [ -n "${PATHS:-}" ]; then
+    IFS=',' read -ra PATH_MAPPINGS <<< "$PATHS"
+    for mapping in "${PATH_MAPPINGS[@]}"; do
+      # Skip empty mappings
+      if [ -z "$mapping" ]; then
+        continue
+      }
+      
+      # Check format (path:service:port)
+      if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-/]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
+        bgd_handle_error "invalid_parameter" "Invalid path mapping format: $mapping (should be path:service:port)"
+        return 1
+      fi
+      
+      # Extract port and validate
+      local port=$(echo "$mapping" | cut -d':' -f3)
+      if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        bgd_handle_error "invalid_parameter" "Invalid port in path mapping: $mapping"
+        return 1
+      fi
+    done
+  fi
+  
+  # Validate subdomains parameter
+  if [ -n "${SUBDOMAINS:-}" ]; then
+    IFS=',' read -ra SUBDOMAIN_MAPPINGS <<< "$SUBDOMAINS"
+    for mapping in "${SUBDOMAIN_MAPPINGS[@]}"; do
+      # Skip empty mappings
+      if [ -z "$mapping" ]; then
+        continue
+      }
+      
+      # Check format (subdomain:service:port)
+      if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
+        bgd_handle_error "invalid_parameter" "Invalid subdomain mapping format: $mapping (should be subdomain:service:port)"
+        return 1
+      fi
+      
+      # Extract port and validate
+      local port=$(echo "$mapping" | cut -d':' -f3)
+      if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        bgd_handle_error "invalid_parameter" "Invalid port in subdomain mapping: $mapping"
+        return 1
+      fi
+    done
+  fi
+  
+  return 0
+}
+
+# Enhanced validation for all parameters
 bgd_validate_parameters() {
   local skip_validation="${1:-false}"
   
@@ -425,7 +480,58 @@ bgd_validate_parameters() {
     return 1
   fi
   
+  # Validate routing parameters
+  bgd_validate_routing_parameters || return 1
+  
   return 0
+}
+
+# Improved sensitive data sanitization
+bgd_sanitize_sensitive_data() {
+  local input="$1"
+  local sanitized="$input"
+  
+  # Define patterns to sanitize with improved regex
+  local patterns=(
+    "password=[^&[:space:]]*"
+    "passwd=[^&[:space:]]*"
+    "token=[^&[:space:]]*"
+    "secret=[^&[:space:]]*"
+    "key=[^&[:space:]]*"
+    "apikey=[^&[:space:]]*"
+    "api_key=[^&[:space:]]*"
+    "access_token=[^&[:space:]]*"
+    "DATABASE_URL=[^[:space:]]*"
+    "TELEGRAM_BOT_TOKEN=[^[:space:]]*"
+    "SLACK_WEBHOOK=[^[:space:]]*"
+  )
+  
+  # Sanitize each pattern with enhanced regex
+  for pattern in "${patterns[@]}"; do
+    # Use awk for more robust pattern matching
+    sanitized=$(echo "$sanitized" | awk -v pat="$pattern" '{
+      p=match($0, pat);
+      if (p) {
+        before=substr($0, 1, p-1);
+        matched=substr($0, p, RLENGTH);
+        after=substr($0, p+RLENGTH);
+        
+        # Extract the key part (before =)
+        split(matched, parts, "=");
+        key=parts[1];
+        
+        # Replace with sanitized version
+        print before key "=******" after;
+      } else {
+        print $0;
+      }
+    }')
+  done
+  
+  # Sanitize connection strings with enhanced regex
+  sanitized=$(echo "$sanitized" | sed -E 's|([a-zA-Z]+://[^:]+:)[^@[:space:]]+(@)|\\1******\\2|g')
+  
+  echo "$sanitized"
 }
 
 # ============================================================
@@ -687,42 +793,104 @@ bgd_find_available_port() {
   return 1
 }
 
-# Manage automatic port assignment
+# Check if a port range is available
+bgd_find_available_port_range() {
+  local start_port="$1"
+  local count="$2"
+  local max_attempts="${3:-100}"
+  
+  local base_port=$start_port
+  local attempts=0
+  
+  while [ $attempts -lt $max_attempts ]; do
+    local all_available=true
+    
+    # Check if all ports in the range are available
+    for i in $(seq 0 $((count-1))); do
+      local port=$((base_port + i))
+      if ! bgd_is_port_available "$port"; then
+        all_available=false
+        break
+      fi
+    done
+    
+    if [ "$all_available" = true ]; then
+      # Return the base port of the available range
+      echo "$base_port"
+      return 0
+    fi
+    
+    # Try next port range
+    base_port=$((base_port + count))
+    attempts=$((attempts + 1))
+  done
+  
+  # No available port range found
+  return 1
+}
+
+# Improved port management with port range finding
 bgd_manage_ports() {
   if [ "${AUTO_PORT_ASSIGNMENT:-false}" = "true" ]; then
     bgd_log "Automatic port assignment enabled, checking port availability..." "info"
     
-    # Check and adjust blue port if needed
-    if ! bgd_is_port_available "$BLUE_PORT"; then
-      local original_blue_port="$BLUE_PORT"
-      BLUE_PORT=$(bgd_find_available_port $((BLUE_PORT + 1)))
-      bgd_log "Original blue port $original_blue_port is in use, using $BLUE_PORT instead" "warning"
+    # Use a more sophisticated approach to find available ports
+    # Look for groups of ports to avoid fragmentation
+    
+    # Check if we can find two consecutive ports for blue/green
+    local env_base_port=$(bgd_find_available_port_range 8080 2 50)
+    if [ -n "$env_base_port" ]; then
+      BLUE_PORT=$env_base_port
+      GREEN_PORT=$((env_base_port + 1))
+      bgd_log "Found available port range for environments: Blue=$BLUE_PORT, Green=$GREEN_PORT" "info"
+    else
+      # Fall back to individual port assignment
+      bgd_log "Could not find consecutive ports, falling back to individual assignment" "warning"
+      
+      # Check and adjust blue port if needed
+      if ! bgd_is_port_available "$BLUE_PORT"; then
+        local original_blue_port="$BLUE_PORT"
+        BLUE_PORT=$(bgd_find_available_port $((BLUE_PORT + 1)))
+        bgd_log "Original blue port $original_blue_port is in use, using $BLUE_PORT instead" "warning"
+      fi
+      
+      # Check and adjust green port if needed
+      if ! bgd_is_port_available "$GREEN_PORT"; then
+        local original_green_port="$GREEN_PORT"
+        GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
+        bgd_log "Original green port $original_green_port is in use, using $GREEN_PORT instead" "warning"
+      fi
+      
+      # Ensure blue and green ports don't conflict
+      if [ "$BLUE_PORT" = "$GREEN_PORT" ]; then
+        GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
+        bgd_log "Port conflict detected, using $GREEN_PORT for green environment" "warning"
+      fi
     fi
     
-    # Check and adjust green port if needed
-    if ! bgd_is_port_available "$GREEN_PORT"; then
-      local original_green_port="$GREEN_PORT"
-      GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
-      bgd_log "Original green port $original_green_port is in use, using $GREEN_PORT instead" "warning"
-    fi
-    
-    # Ensure blue and green ports don't conflict
-    if [ "$BLUE_PORT" = "$GREEN_PORT" ]; then
-      GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
-      bgd_log "Port conflict detected, using $GREEN_PORT for green environment" "warning"
-    fi
-    
-    # Check and adjust Nginx ports if needed
-    if ! bgd_is_port_available "$NGINX_PORT"; then
-      local original_nginx_port="$NGINX_PORT"
-      NGINX_PORT=$(bgd_find_available_port $((NGINX_PORT + 1)))
-      bgd_log "Original Nginx port $original_nginx_port is in use, using $NGINX_PORT instead" "warning"
-    fi
-    
-    if ! bgd_is_port_available "$NGINX_SSL_PORT"; then
-      local original_nginx_ssl_port="$NGINX_SSL_PORT"
-      NGINX_SSL_PORT=$(bgd_find_available_port $((NGINX_SSL_PORT + 1)))
-      bgd_log "Original Nginx SSL port $original_nginx_ssl_port is in use, using $NGINX_SSL_PORT instead" "warning"
+    # Check if we can find two consecutive ports for Nginx
+    local nginx_base_port=$(bgd_find_available_port_range 80 2 10)
+    if [ -n "$nginx_base_port" ]; then
+      NGINX_PORT=$nginx_base_port
+      NGINX_SSL_PORT=$((nginx_base_port + 1))
+      bgd_log "Found available port range for Nginx: HTTP=$NGINX_PORT, HTTPS=$NGINX_SSL_PORT" "info"
+    else
+      # Fall back to individual port assignment
+      bgd_log "Could not find consecutive ports for Nginx, falling back to individual assignment" "warning"
+      
+      # Check and adjust Nginx HTTP port
+      if ! bgd_is_port_available "$NGINX_PORT"; then
+        local original_nginx_port="$NGINX_PORT"
+        NGINX_PORT=$(bgd_find_available_port $((NGINX_PORT + 1)))
+        bgd_log "Original Nginx port $original_nginx_port is in use, using $NGINX_PORT instead" "warning"
+      fi
+      
+      # Check and adjust Nginx HTTPS port
+      if ! bgd_is_port_available "$NGINX_SSL_PORT"; then
+        local original_nginx_ssl_port="$NGINX_SSL_PORT"
+        NGINX_SSL_PORT=$(bgd_find_available_port $((NGINX_SSL_PORT + 1)))
+        bgd_log "Original Nginx SSL port $original_nginx_ssl_port is in use, using $NGINX_SSL_PORT instead" "warning"
+      fi
     fi
     
     bgd_log "Port assignment completed: Nginx=$NGINX_PORT, SSL=$NGINX_SSL_PORT, Blue=$BLUE_PORT, Green=$GREEN_PORT" "success"
@@ -946,7 +1114,7 @@ ENV_NAME=${env_name}
 EOL
 
   # Add configuration parameters
-  for param in "NGINX_PORT" "NGINX_SSL_PORT" "DOMAIN_NAME"; do
+  for param in "NGINX_PORT" "NGINX_SSL_PORT" "DOMAIN_NAME" "DOMAIN_ALIASES"; do
     if [ -n "${!param:-}" ]; then
       echo "${param}=${!param}" >> "$env_file"
     fi
