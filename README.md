@@ -685,7 +685,6 @@ For advanced Nginx configuration (SSL, custom routing, etc.), you can modify the
 
 - `config/templates/nginx-single-env.conf.template`
 - `config/templates/nginx-dual-env.conf.template`
-- `config/templates/nginx-multi-domain.conf.template`
 
 ### Docker Compose Override
 

@@ -79,6 +79,94 @@ bgd_create_directories() {
 }
 
 # ============================================================
+# NGINX CONFIGURATION MANAGEMENT
+# ============================================================
+
+# Safely create or update nginx.conf file for dual-environment setup
+bgd_create_dual_env_nginx_conf() {
+  local blue_weight="$1"
+  local green_weight="$2"
+  
+  bgd_log "Generating dual-environment Nginx configuration (blue: $blue_weight, green: $green_weight)" "info"
+  
+  # Use dual-env template for traffic splitting
+  local template="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
+  
+  if [ ! -f "$template" ]; then
+    bgd_handle_error "file_not_found" "Nginx dual-env template not found at $template"
+    return 1
+  fi
+  
+  # Check if nginx.conf is a directory and remove it if so
+  if [ -d "nginx.conf" ]; then
+    bgd_log "Found nginx.conf as a directory, removing it" "warning"
+    rm -rf "nginx.conf"
+  fi
+  
+  # Create nginx configuration in a temporary file first
+  cat "$template" | \
+    sed -e "s/BLUE_WEIGHT/$blue_weight/g" | \
+    sed -e "s/GREEN_WEIGHT/$green_weight/g" | \
+    sed -e "s/APP_NAME/$APP_NAME/g" | \
+    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf.tmp"
+  
+  # Verify temp file was created successfully
+  if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
+    bgd_handle_error "file_not_found" "Failed to create temporary nginx.conf file"
+    return 1
+  fi
+  
+  # Move temp file to actual nginx.conf (atomic operation)
+  mv "nginx.conf.tmp" "nginx.conf"
+  
+  bgd_log "Nginx configuration created successfully" "success"
+  return 0
+}
+
+# Safely create or update nginx.conf file for single-environment setup
+bgd_create_single_env_nginx_conf() {
+  local target_env="$1"
+  
+  bgd_log "Generating single-environment Nginx configuration for $target_env" "info"
+  
+  # Use single-env template for direct routing
+  local template="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
+  
+  if [ ! -f "$template" ]; then
+    bgd_handle_error "file_not_found" "Nginx single-env template not found at $template"
+    return 1
+  fi
+  
+  # Check if nginx.conf is a directory and remove it if so
+  if [ -d "nginx.conf" ]; then
+    bgd_log "Found nginx.conf as a directory, removing it" "warning"
+    rm -rf "nginx.conf"
+  fi
+  
+  # Create nginx configuration in a temporary file first
+  cat "$template" | \
+    sed -e "s/ENVIRONMENT/$target_env/g" | \
+    sed -e "s/APP_NAME/$APP_NAME/g" | \
+    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
+    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
+    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf.tmp"
+  
+  # Verify temp file was created successfully
+  if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
+    bgd_handle_error "file_not_found" "Failed to create temporary nginx.conf file"
+    return 1
+  fi
+  
+  # Move temp file to actual nginx.conf (atomic operation)
+  mv "nginx.conf.tmp" "nginx.conf"
+  
+  bgd_log "Nginx configuration created successfully" "success"
+  return 0
+}
+
+# ============================================================
 # LOGGING SYSTEM
 # ============================================================
 

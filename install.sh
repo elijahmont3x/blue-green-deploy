@@ -63,9 +63,8 @@ done
 # Essential templates
 ESSENTIAL_TEMPLATES=(
   "nginx-single-env.conf.template"
-  "nginx-dual-env.conf.template"
+  "nginx-dual-env.conf.template" 
   "docker-compose.override.template"
-  "nginx-multi-domain.conf.template"
 )
 
 # Copy templates

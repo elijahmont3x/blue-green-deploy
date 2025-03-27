@@ -160,9 +160,8 @@ bgd_obtain_ssl_certificates() {
 bgd_setup_nginx_ssl() {
   local domain="${1:-$DOMAIN_NAME}"
   local cert_path="${SSL_CERT_PATH:-./certs}"
-  local template_dir="${BGD_TEMPLATES_DIR:-./config/templates}"
   
-  bgd_log "Setting up Nginx SSL configuration for $domain" "info"
+  bgd_log "Configuring Nginx with SSL for $domain" "info"
   
   # Check if certificates exist
   if ! bgd_check_certificates "$domain"; then
@@ -170,20 +169,13 @@ bgd_setup_nginx_ssl() {
     return 1
   fi
   
-  # Get the appropriate template
-  local template="$template_dir/nginx-multi-domain.conf.template"
-  if [ ! -f "$template" ]; then
-    bgd_log "Multi-domain template not found, using dual-env template" "warning"
-    template="$template_dir/nginx-dual-env.conf.template"
-  fi
+  # Ensure certificate directory is properly linked in nginx config
+  bgd_ensure_directory "$cert_path"
   
-  if [ ! -f "$template" ]; then
-    bgd_log "No Nginx template found at $template_dir" "error"
-    return 1
-  fi
+  # No need to modify nginx.conf templates as they already include SSL configuration
+  # The core deployment process will handle this correctly
   
-  # Already setup in core functionality
-  bgd_log "Nginx SSL configuration is handled by core deployment process" "info"
+  bgd_log "Nginx SSL configuration is handled by core templates" "info"
   return 0
 }
 

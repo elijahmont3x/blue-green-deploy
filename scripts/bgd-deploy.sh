@@ -125,6 +125,23 @@ bgd_deploy() {
     fi
   fi
 
+  # Set initial traffic weights based on current environment
+  if [ "$CURRENT_ENV" = "blue" ]; then
+    # Blue is active, green gets no traffic initially
+    BLUE_WEIGHT_VALUE=10
+    GREEN_WEIGHT_VALUE=0
+  else
+    # Green is active, blue gets no traffic initially
+    BLUE_WEIGHT_VALUE=0
+    GREEN_WEIGHT_VALUE=10
+  fi
+  
+  # CRITICAL FIX: Create valid nginx.conf BEFORE any containers start
+  bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
+
+  # Create directory for SSL certificates if it doesn't exist
+  bgd_ensure_directory "certs"
+
   # Initialize shared services if requested
   if [ "${SETUP_SHARED:-false}" = "true" ]; then
     bgd_log "Setting up shared services (database, redis, etc.)" "info"
@@ -221,46 +238,6 @@ services:
 EOL
   fi
 
-  # Generate initial nginx configuration
-  bgd_log "Generating Nginx configuration" "info"
-  NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-multi-domain.conf.template"
-  if [ ! -f "$NGINX_TEMPLATE" ]; then
-    NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
-  fi
-  
-  if [ ! -f "$NGINX_TEMPLATE" ]; then
-    bgd_handle_error "file_not_found" "Nginx template file not found in templates directory"
-    return 1
-  fi
-  
-  # Set initial traffic weights
-  if [ "$CURRENT_ENV" = "blue" ]; then
-    # Blue is active, green gets no traffic initially
-    BLUE_WEIGHT_VALUE=10
-    GREEN_WEIGHT_VALUE=0
-  else
-    # Green is active, blue gets no traffic initially
-    BLUE_WEIGHT_VALUE=0
-    GREEN_WEIGHT_VALUE=10
-  fi
-  
-  # Create the nginx.conf file before starting any containers
-  cat "$NGINX_TEMPLATE" | \
-    sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
-    sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
-    sed -e "s/APP_NAME/$APP_NAME/g" | \
-    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
-
-  if [ ! -f "nginx.conf" ] || [ ! -s "nginx.conf" ]; then
-    bgd_handle_error "file_not_found" "Failed to create nginx.conf file"
-    return 1
-  fi
-
-  # Create directory for SSL certificates if it doesn't exist
-  bgd_ensure_directory "certs"
-
   # Start the new environment
   bgd_log "Starting $TARGET_ENV environment with version $VERSION" "info"
   $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" --env-file ".env.${TARGET_ENV}" \
@@ -320,13 +297,8 @@ EOL
       GREEN_WEIGHT_VALUE=9
     fi
     
-    cat "$NGINX_TEMPLATE" | \
-      sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
-      sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
-      sed -e "s/APP_NAME/$APP_NAME/g" | \
-      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+    # Use our core function to update nginx.conf
+    bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
     $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
@@ -337,13 +309,8 @@ EOL
     BLUE_WEIGHT_VALUE=5
     GREEN_WEIGHT_VALUE=5
     
-    cat "$NGINX_TEMPLATE" | \
-      sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
-      sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
-      sed -e "s/APP_NAME/$APP_NAME/g" | \
-      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+    # Use our core function to update nginx.conf
+    bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
     $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
@@ -361,13 +328,8 @@ EOL
       GREEN_WEIGHT_VALUE=1
     fi
     
-    cat "$NGINX_TEMPLATE" | \
-      sed -e "s/BLUE_WEIGHT/$BLUE_WEIGHT_VALUE/g" | \
-      sed -e "s/GREEN_WEIGHT/$GREEN_WEIGHT_VALUE/g" | \
-      sed -e "s/APP_NAME/$APP_NAME/g" | \
-      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf"
+    # Use our core function to update nginx.conf
+    bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
     $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"

@@ -115,29 +115,8 @@ bgd_rollback() {
   # Update nginx to route traffic to rollback environment
   bgd_log "Updating nginx to route traffic to $ROLLBACK_ENV environment" "info"
 
-  # Use the single environment template
-  NGINX_TEMPLATE="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
-
-  if [ -f "$NGINX_TEMPLATE" ]; then
-    # Create nginx.conf as a file
-    cat "$NGINX_TEMPLATE" | \
-      sed -e "s/ENVIRONMENT/$ROLLBACK_ENV/g" | \
-      sed -e "s/APP_NAME/$APP_NAME/g" | \
-      sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-      sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-      sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > nginx.conf
-    
-    # Verify the file was created properly
-    if [ ! -f "nginx.conf" ] || [ ! -s "nginx.conf" ]; then
-      bgd_handle_error "file_not_found" "Failed to create nginx.conf file"
-      return 1
-    fi
-    
-    bgd_log "Generated nginx config for $ROLLBACK_ENV environment" "info"
-  else
-    bgd_handle_error "file_not_found" "Nginx template file not found at $NGINX_TEMPLATE"
-    return 1
-  fi
+  # Use single-env template for direct routing 
+  bgd_create_single_env_nginx_conf "$ROLLBACK_ENV"
 
   # Reload nginx configuration
   bgd_log "Reloading nginx" "info"
