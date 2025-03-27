@@ -2,43 +2,19 @@
 version: '3.8'
 
 services:
-  # Main application overrides
-  app:
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - ENV_NAME={{ENV_NAME}}
-    # Remove development-only settings
-    volumes: []
-    # Override port based on environment
-    ports:
-      - '{{PORT}}:3000'
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-
-  # Frontend overrides (if present)
-  frontend:
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - ENV_NAME={{ENV_NAME}}
-      - API_URL=http://app:3000
-    # Override port based on environment
-    ports:
-      - '{{FRONTEND_PORT}}:80'
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 512M
-
-  # Nginx overrides
+  # Service overrides - automatically populated by bgd-deploy.sh
+  # This template avoids any assumptions about your service structure
+  
+  # We only provide explicit Nginx configuration
   nginx:
     # Environment-specific container name to avoid conflicts
     container_name: ${APP_NAME}-nginx-{{ENV_NAME}}
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
+    ports:
+      - ${NGINX_PORT:-80}:80
+      - ${NGINX_SSL_PORT:-443}:443
+    networks:
+      - env-network
+      - shared-network

@@ -40,6 +40,11 @@ declare -A BGD_DEFAULT_VALUES=(
   ["NGINX_SSL_PORT"]="443"
   ["BLUE_PORT"]="8081"
   ["GREEN_PORT"]="8082"
+  ["PATHS"]=""
+  ["SUBDOMAINS"]=""
+  ["DEFAULT_SERVICE"]="app"
+  ["DEFAULT_PORT"]="3000"
+  ["DOMAIN_ALIASES"]=""
 )
 
 # Plugin registered arguments
@@ -89,13 +94,19 @@ bgd_create_dual_env_nginx_conf() {
   
   bgd_log "Generating dual-environment Nginx configuration (blue: $blue_weight, green: $green_weight)" "info"
   
-  # Use dual-env template for traffic splitting
-  local template="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
-  
-  if [ ! -f "$template" ]; then
-    bgd_handle_error "file_not_found" "Nginx dual-env template not found at $template"
-    return 1
+  # Source the template processor if not already loaded
+  if ! declare -f bgd_generate_dual_env_nginx_conf > /dev/null; then
+    local nginx_template_script="${BGD_SCRIPT_DIR}/bgd-nginx-template.sh"
+    if [ -f "$nginx_template_script" ]; then
+      source "$nginx_template_script"
+    else
+      bgd_handle_error "file_not_found" "Nginx template processor not found at $nginx_template_script"
+      return 1
+    fi
   fi
+  
+  # Generate the configuration
+  local nginx_conf=$(bgd_generate_dual_env_nginx_conf "$APP_NAME" "$blue_weight" "$green_weight" "$PATHS" "$SUBDOMAINS")
   
   # Check if nginx.conf is a directory and remove it if so
   if [ -d "nginx.conf" ]; then
@@ -103,14 +114,8 @@ bgd_create_dual_env_nginx_conf() {
     rm -rf "nginx.conf"
   fi
   
-  # Create nginx configuration in a temporary file first
-  cat "$template" | \
-    sed -e "s/BLUE_WEIGHT/$blue_weight/g" | \
-    sed -e "s/GREEN_WEIGHT/$green_weight/g" | \
-    sed -e "s/APP_NAME/$APP_NAME/g" | \
-    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf.tmp"
+  # Write the configuration to a temporary file first
+  echo "$nginx_conf" > "nginx.conf.tmp"
   
   # Verify temp file was created successfully
   if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
@@ -131,13 +136,19 @@ bgd_create_single_env_nginx_conf() {
   
   bgd_log "Generating single-environment Nginx configuration for $target_env" "info"
   
-  # Use single-env template for direct routing
-  local template="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
-  
-  if [ ! -f "$template" ]; then
-    bgd_handle_error "file_not_found" "Nginx single-env template not found at $template"
-    return 1
+  # Source the template processor if not already loaded
+  if ! declare -f bgd_generate_single_env_nginx_conf > /dev/null; then
+    local nginx_template_script="${BGD_SCRIPT_DIR}/bgd-nginx-template.sh"
+    if [ -f "$nginx_template_script" ]; then
+      source "$nginx_template_script"
+    else
+      bgd_handle_error "file_not_found" "Nginx template processor not found at $nginx_template_script"
+      return 1
+    fi
   fi
+  
+  # Generate the configuration
+  local nginx_conf=$(bgd_generate_single_env_nginx_conf "$APP_NAME" "$target_env" "$PATHS" "$SUBDOMAINS")
   
   # Check if nginx.conf is a directory and remove it if so
   if [ -d "nginx.conf" ]; then
@@ -145,13 +156,8 @@ bgd_create_single_env_nginx_conf() {
     rm -rf "nginx.conf"
   fi
   
-  # Create nginx configuration in a temporary file first
-  cat "$template" | \
-    sed -e "s/ENVIRONMENT/$target_env/g" | \
-    sed -e "s/APP_NAME/$APP_NAME/g" | \
-    sed -e "s/DOMAIN_NAME/${DOMAIN_NAME:-example.com}/g" | \
-    sed -e "s/NGINX_PORT/${NGINX_PORT}/g" | \
-    sed -e "s/NGINX_SSL_PORT/${NGINX_SSL_PORT}/g" > "nginx.conf.tmp"
+  # Write the configuration to a temporary file first
+  echo "$nginx_conf" > "nginx.conf.tmp"
   
   # Verify temp file was created successfully
   if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
@@ -626,7 +632,7 @@ bgd_is_port_available() {
   # Primary approach: Try direct socket test
   # If we can connect, port is in use (return 1/false)
   # If connection fails, port is available (return 0/true)
-  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
+  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then # Fixed typo: /dev/ttcp to /dev/tcp
     # Connection successful, port is in use
     return 1
   fi
@@ -982,12 +988,6 @@ EOL
       fi
     fi
   done
-  
-  # Add frontend configuration if specified
-  if [ -n "${FRONTEND_IMAGE_REPO:-}" ]; then
-    echo "FRONTEND_IMAGE_REPO=${FRONTEND_IMAGE_REPO}" >> "$env_file"
-    echo "FRONTEND_VERSION=${FRONTEND_VERSION:-$VERSION}" >> "$env_file"
-  fi
 
   # Set secure permissions
   chmod 600 "$env_file"

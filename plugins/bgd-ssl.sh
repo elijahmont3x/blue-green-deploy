@@ -171,11 +171,10 @@ bgd_setup_nginx_ssl() {
   
   # Ensure certificate directory is properly linked in nginx config
   bgd_ensure_directory "$cert_path"
-  
   # No need to modify nginx.conf templates as they already include SSL configuration
-  # The core deployment process will handle this correctly
+  # Our new template system handles SSL configuration properly
   
-  bgd_log "Nginx SSL configuration is handled by core templates" "info"
+  bgd_log "Nginx SSL configuration is handled by the template system" "info"
   return 0
 }
 

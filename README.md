@@ -1,10 +1,16 @@
 # Blue/Green Deployment System
 
-A comprehensive toolkit for implementing zero-downtime deployments using the blue/green deployment strategy. This toolkit enables continuous integration and deployment pipelines to maintain two identical environments, gradually shift traffic between them, and achieve seamless updates with no downtime.
+A comprehensive, service-agnostic toolkit for achieving zero-downtime deployments using the blue/green strategy. This toolkit provides dynamic Nginx configuration generation, flexible routing (path and subdomain based), SSL automation, automated health checks, and complete rollback and cleanup capabilities.
 
 ## What Is This?
 
-This is a collection of deployment scripts and configuration templates that your CI/CD pipeline installs **directly on your production server** to enable blue/green deployments. Think of it as a server-side deployment toolkit that works with your existing Docker-based applications.
+This deployment system transforms your single-environment Docker setup into two identical environments (Blue and Green) with a dynamic reverse proxy managed by Nginx. Key benefits include:
+- **Zero assumptions about your application architecture**
+- **Dynamic Nginx templating** that supports arbitrary path and subdomain rules
+- **Automatic SSL management** with Let's Encrypt
+- **Automated health checking and traffic shifting**
+- **Rollback and cleanup tools**
+- **Extensible plugin system**
 
 ## Table of Contents
 
@@ -50,12 +56,10 @@ Key features:
 
 ## How It Works
 
-This toolkit works with your existing `docker-compose.yml` and `Dockerfile`:
-
-1. It creates environment-specific versions of your Docker Compose setup
-2. It configures Nginx as a load balancer in front of your application
-3. It manages which environment receives traffic and at what percentage
-4. It orchestrates the deployment, testing, and cutover process
+1. **Environment Setup**: Two environments are created using Docker Compose. Only one is active at a time.
+2. **Dynamic Routing**: Routing rules for both path-based and subdomain-based routing are provided via new command-line options (e.g., `--paths` and `--subdomains`), dynamically generating Nginx configuration.
+3. **Health Checks & Traffic Shifting**: Health endpoints are continuously polled to ensure system readiness. Traffic is gradually shifted and, upon validation, a full cutover is executed.
+4. **Rollback & Cleanup**: In case of issues, rollback functions are available along with cleanup utilities to remove unnecessary resources.
 
 ### Infrastructure Changes
 
@@ -748,3 +752,116 @@ Follow these security best practices in your CI/CD pipelines:
 2. **Limit SSH access**: Use dedicated deployment users with restricted permissions
 3. **Use read-only tokens**: When pulling from Docker registries, use read-only tokens where possible
 4. **Scan images**: Include container security scanning in your pipeline
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/blue-green-deploy.git
+cd blue-green-deploy
+
+# Make installer executable 
+chmod +x install.sh
+
+# Install the toolkit
+./install.sh myapp
+```
+
+## Basic Usage
+
+### Initial Deployment
+
+```bash
+./scripts/bgd-deploy.sh v1.0.0 \
+  --app-name=myapp \
+  --image-repo=ghcr.io/myorg/myapp \
+  --auto-port-assignment \
+  --domain-name=example.com \
+  --certbot-email=admin@example.com
+```
+
+### Subsequent Deployments
+
+```bash
+./scripts/bgd-deploy.sh v1.0.1 \
+  --app-name=myapp \
+  --image-repo=ghcr.io/myorg/myapp
+```
+
+### Cutover
+
+```bash
+./scripts/bgd-cutover.sh green --app-name=myapp
+```
+
+### Rollback
+
+```bash
+./scripts/bgd-rollback.sh --app-name=myapp --force
+```
+
+### Cleanup
+
+```bash
+./scripts/bgd-cleanup.sh --app-name=myapp --old-only --cleanup-orphans
+```
+
+## Routing Examples
+
+#### Path-Based Routing
+
+```bash
+./scripts/bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --paths="api:backend:3000,dashboard:frontend:80"
+```
+
+#### Subdomain-Based Routing
+
+```bash
+./scripts/bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --domain-name=example.com --subdomains="api:backend:3000,admin:admin-panel:4000"
+```
+
+#### Mixed Routing
+
+```bash
+./scripts/bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --domain-name=example.com --paths="api:backend:3000,docs:docs:8000" \
+  --subdomains="admin:admin-panel:4000,staging:app:3000"
+```
+
+## Plugin System
+
+Extend functionality with plugins. Available plugins include:
+- **SSL Automation**: Manages certificate generation and renewal.
+- **Notification**: Sends deployment notifications via Telegram and Slack.
+- **Audit Logging**: Tracks all deployment events.
+
+## Advanced Configuration
+
+- **Nginx Templates**: Customize the provided `nginx-dual-env.conf.template` and `nginx-single-env.conf.template` to adjust SSL, security headers, or proxy settings.
+- **Docker Compose Overrides**: Modify `docker-compose.override.template` for environment-specific adjustments.
+
+## Troubleshooting
+
+For troubleshooting, refer to the [Troubleshooting Guide](./docs/bgd-troubleshooting.md) that covers:
+- Health check failures
+- Port conflicts (use `--auto-port-assignment`)
+- Database migration issues
+- SSL certificate problems
+- Container and network cleanup
+
+## Security Best Practices
+
+- Run containers with non-root users.
+- Use secrets for environment-specific data.
+- Limit access via dedicated deployment users.
+- Employ image scanning as part of your CI/CD pipeline.
+
+## CI/CD Integration Example
+
+Refer to the [CI/CD Integration Guide](./docs/bgd-usage-examples.md) for a complete GitHub Actions setup.
+
+## License
+
+MIT

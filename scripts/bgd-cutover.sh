@@ -30,8 +30,15 @@ ARGUMENTS:
 REQUIRED OPTIONS:
   --app-name=NAME           Application name
 
+ROUTING OPTIONS:
+  --paths=LIST              Path:service:port mappings (comma-separated)
+                           Example: "api:backend:3000,dashboard:frontend:80"
+  --subdomains=LIST         Subdomain:service:port mappings (comma-separated)
+                           Example: "api:backend:3000,team:frontend:80"
+  --domain-name=DOMAIN      Domain name for routing
+  --domain-aliases=LIST     Additional domain aliases (comma-separated)
+
 CONFIGURATION OPTIONS:
-  --domain-name=DOMAIN      Domain name for multi-domain routing
   --nginx-port=PORT         Nginx external port (default: 80)
   --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
   --blue-port=PORT          Blue environment port (default: 8081)
@@ -50,8 +57,8 @@ EXAMPLES:
   # Complete cutover to green environment
   ./bgd-cutover.sh green --app-name=myapp
 
-  # Cutover to blue environment while keeping green running
-  ./bgd-cutover.sh blue --app-name=myapp --keep-old
+  # Cutover to blue environment with routing configuration
+  ./bgd-cutover.sh blue --app-name=myapp --paths="api:api:3000,admin:admin:3001"
 
 =================================================================
 EOL

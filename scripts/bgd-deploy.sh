@@ -38,6 +38,16 @@ PORT OPTIONS:
   --green-port=PORT         Green environment port (default: 8082)
   --auto-port-assignment    Automatically assign available ports
 
+ROUTING OPTIONS:
+  --paths=LIST              Path:service:port mappings (comma-separated)
+                           Example: "api:backend:3000,dashboard:frontend:80"
+  --subdomains=LIST         Subdomain:service:port mappings (comma-separated)
+                           Example: "api:backend:3000,team:frontend:80"
+  --domain-name=DOMAIN      Domain name for routing
+  --domain-aliases=LIST     Additional domain aliases (comma-separated)
+  --default-service=NAME    Default service to route root traffic to (default: app)
+  --default-port=PORT       Default port for the default service (default: 3000)
+
 HEALTH CHECK OPTIONS:
   --health-endpoint=PATH    Health check endpoint (default: /health)
   --health-retries=N        Number of health check retries (default: 12)
@@ -49,8 +59,6 @@ HEALTH CHECK OPTIONS:
 
 DEPLOYMENT OPTIONS:
   --domain-name=DOMAIN      Domain name for multi-domain routing
-  --frontend-image-repo=REPO Frontend image repository
-  --frontend-version=VER    Frontend version (defaults to same as VERSION)
   --setup-shared            Initialize shared services (database, cache, etc.)
   --skip-migrations         Skip database migrations
   --migrations-cmd=CMD      Custom migrations command
@@ -68,11 +76,11 @@ EXAMPLES:
   # Basic deployment
   ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
   
-  # Deploy with automatic port assignment and rollback
-  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --auto-port-assignment --auto-rollback
+  # Deploy with path-based routing
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --paths="api:api:3000,admin:admin:3001"
   
-  # Deploy with notifications
-  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --notify-enabled --telegram-bot-token=TOKEN --telegram-chat-id=ID
+  # Deploy with subdomain-based routing
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --subdomains="api:api:3000,admin:admin:3001"
 
 =================================================================
 EOL
@@ -351,6 +359,52 @@ EOL
   bgd_log "Deployment of version $VERSION to $TARGET_ENV environment completed successfully" "success"
   
   return 0
+}
+
+# Create secure environment file
+bgd_create_secure_env_file() {
+  local env_name="$1"
+  local env_file=".env.${env_name}"
+  local port="$2"
+
+  # Create or overwrite the environment file
+  : > "$env_file"
+
+  # Add common environment variables
+  echo "ENV_NAME=${env_name}" >> "$env_file"
+  echo "PORT=${port}" >> "$env_file"
+
+  # Add any environment variables with secure handling
+  local sensitive_patterns="PASSWORD|SECRET|KEY|TOKEN|DATABASE_URL"
+  
+  # Export explicitly defined sensitive variables
+  if [ -n "${DATABASE_URL:-}" ]; then
+    bgd_log "Adding database connection string to environment file" "debug"
+    echo "DATABASE_URL=${DATABASE_URL}" >> "$env_file"
+  fi
+  
+  if [ -n "${REDIS_URL:-}" ]; then
+    bgd_log "Adding Redis connection string to environment file" "debug"
+    echo "REDIS_URL=${REDIS_URL}" >> "$env_file"
+  fi
+  
+  # Add any DB_* or APP_* environment variables
+  env | grep -E '^(DB_|APP_)' | while read -r line; do
+    # Check if it's a sensitive variable based on name
+    if [[ "$line" =~ $sensitive_patterns ]]; then
+      bgd_log "Adding sensitive environment variable to file" "debug"
+    fi
+    echo "$line" >> "$env_file"
+  done
+  
+  # Add plugin-registered variables
+  for param in "${!BGD_PLUGIN_ARGS[@]}"; do
+    if [[ "$param" =~ ^(DB_|APP_|SERVICE_|SSL_|METRICS_|AUTH_) ]]; then
+      if [ -n "${!param:-}" ]; then
+        echo "${param}=${!param}" >> "$env_file"
+      fi
+    fi
+  done
 }
 
 # If this script is being executed directly (not sourced)

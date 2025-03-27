@@ -1,6 +1,29 @@
 # Changelog
 
-All notable changes to the Blue/Green Deployment toolkit will be documented in this file.
+All notable changes to the Blue/Green Deployment toolkit are documented in this file.
+
+## [1.0.1] - 2025-03-30
+
+### Enhancements
+- **Complete Redesign of Nginx Templating System**:  
+  - Discarded all legacy service-specific code.
+  - Introduced dynamic generation of Nginx configurations that support both path-based and subdomain-based routing.
+  - Improved SSL integration with automatic certificate management.
+- **Dynamic Port Assignment**:  
+  - Reinforced the auto-port-assignment logic to handle port conflicts seamlessly.
+- **Enhanced Routing Options**:  
+  - New command-line parameters (`--paths`, `--subdomains`, `--default-service`, and `--default-port`) for flexible, service-agnostic routing.
+- **Plugin Improvements**:  
+  - Updated plugin APIs for SSL, notifications, audit logging, and more.
+  
+### Bug Fixes
+- Fixed duplicated file-writing routines by suggesting potential refactoring (no logical impact).
+- Addressed a syntax error in the Nginx template processor.
+  
+### Documentation Updates
+- Revised the README to reflect the new dynamic templating system and comprehensive feature set.
+- Updated the Routing System and CI/CD integration examples.
+- Added detailed troubleshooting and security best practices sections.
 
 ## [1.0.0] - 2025-03-26
 

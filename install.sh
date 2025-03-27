@@ -44,6 +44,7 @@ CORE_SCRIPTS=(
   "bgd-rollback.sh"
   "bgd-cleanup.sh"
   "bgd-health-check.sh"
+  "bgd-nginx-template.sh"
 )
 
 # Copy core scripts and ensure they're all executable

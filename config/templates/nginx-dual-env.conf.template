@@ -23,118 +23,54 @@ http {
     gzip  on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
     
-    # Blue/green weighted upstream for main application
-    upstream app {
-        server APP_NAME-blue-app-1:3000 weight=BLUE_WEIGHT;
-        server APP_NAME-green-app-1:3000 weight=GREEN_WEIGHT;
-    }
+    # DYNAMIC_UPSTREAMS
+    # This section will be populated with dynamically generated upstream blocks
     
     # HTTP server - redirects to HTTPS
     server {
         listen NGINX_PORT default_server;
-        server_name DOMAIN_NAME www.DOMAIN_NAME;
+        server_name DOMAIN_NAME DOMAIN_ALIASES;
         
         # Redirect all HTTP requests to HTTPS
         return 301 https://$host$request_uri;
     }
     
-    # HTTPS server
+    # HTTPS server for main domain
     server {
         listen NGINX_SSL_PORT ssl http2;
-        server_name DOMAIN_NAME www.DOMAIN_NAME;
+        server_name DOMAIN_NAME DOMAIN_ALIASES;
         
         # SSL Configuration
         ssl_certificate /etc/nginx/certs/fullchain.pem;
         ssl_certificate_key /etc/nginx/certs/privkey.pem;
         ssl_protocols TLSv1.2 TLSv1.3;
         ssl_prefer_server_ciphers on;
-        ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
-        ssl_session_timeout 1d;
+        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
         ssl_session_cache shared:SSL:10m;
-        ssl_session_tickets off;
+        ssl_session_timeout 1d;
+        ssl_stapling on;
+        ssl_stapling_verify on;
         
         # Security headers
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Strict-Transport-Security "max-age=15768000; includeSubDomains" always;
         add_header X-Content-Type-Options nosniff;
         add_header X-Frame-Options SAMEORIGIN;
         add_header X-XSS-Protection "1; mode=block";
         
-        # Root application routes
+        # DYNAMIC_PATH_ROUTES
+        # This section will be populated with dynamically generated location blocks
+        
+        # Default location
         location / {
-            proxy_pass http://app;
+            # DEFAULT_UPSTREAM
+            proxy_pass http://default_upstream;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_read_timeout 90;
-            
-            # Add blue/green environment identifier to response headers
-            add_header X-Environment $upstream_addr;
-        }
-        
-        # Health check endpoint
-        location /health {
-            proxy_pass http://app/health;
-            access_log off;
-            proxy_read_timeout 5s; # Shorter timeout for health checks
-        }
-        
-        # API routes (optional, for subdomain-like routing)
-        location /api/ {
-            proxy_pass http://app/api/;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_read_timeout 90;
         }
     }
     
-    # API subdomain (if used)
-    server {
-        listen NGINX_PORT;
-        listen NGINX_SSL_PORT ssl http2;
-        server_name api.DOMAIN_NAME;
-        
-        # SSL Configuration
-        ssl_certificate /etc/nginx/certs/fullchain.pem;
-        ssl_certificate_key /etc/nginx/certs/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_prefer_server_ciphers on;
-        ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384';
-        ssl_session_timeout 1d;
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_tickets off;
-        
-        # Security headers
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header X-Content-Type-Options nosniff;
-        add_header X-Frame-Options SAMEORIGIN;
-        add_header X-XSS-Protection "1; mode=block";
-        
-        # Handle HTTP to HTTPS redirect
-        if ($scheme = http) {
-            return 301 https://$host$request_uri;
-        }
-        
-        # Application routes
-        location / {
-            proxy_pass http://app/api/;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_read_timeout 90;
-            
-            # Add blue/green environment identifier to response headers
-            add_header X-Environment $upstream_addr;
-        }
-        
-        # Health check endpoint
-        location /health {
-            proxy_pass http://app/health;
-            access_log off;
-            proxy_read_timeout 5s; # Shorter timeout for health checks
-        }
-    }
+    # DYNAMIC_SUBDOMAIN_SERVERS
+    # This section will be populated with dynamically generated server blocks for subdomains
 }
