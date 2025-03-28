@@ -193,9 +193,9 @@ bgd_swap_databases() {
   
   bgd_log "Swapping shadow database with main database" "info"
   
+  # Use a case statement to handle different database types
   case "$DB_TYPE" in
     postgres|postgresql)
-      # Use PostgreSQL database renaming
       # First rename current to temp
       PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$DB_NAME\" RENAME TO \"$temp_db_name\";" || {
         bgd_log "Failed to rename current database to temp" "error"
@@ -213,60 +213,47 @@ bgd_swap_databases() {
       # Rename temp to shadow for future use
       PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$temp_db_name\" RENAME TO \"$shadow_db_name\";" || {
         bgd_log "Failed to rename temp database to shadow" "warning"
-        # Not critical, just a warning
       }
+      
+      bgd_log "PostgreSQL database swap completed successfully" "success"
       ;;
+    
     mysql)
-      # Create a transaction lock to prevent connections during swap
-      bgd_log "Creating transaction lock for MySQL database swap" "info"
+      # For MySQL we use a different approach since it doesn't support direct database renaming
       
-      # Connect to MySQL server
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" << EOF || {
-        bgd_log "Failed to create MySQL transaction lock" "error"
-        return 1
-      }
--- Prevent new connections to the databases
-FLUSH TABLES WITH READ LOCK;
-EOF
-      
-      # Export current database structure and data
+      # First backup the current database
       bgd_log "Backing up current database before swap" "info"
-      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$DB_NAME" > "${DB_NAME}_backup.sql" || {
-        # Release the lock in case of failure
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "UNLOCK TABLES;"
-        bgd_log "Failed to back up current database" "error"
+      local backup_file="${DB_NAME}_backup.sql"
+      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$DB_NAME" > "$backup_file" || {
+        bgd_log "Failed to backup current database" "error"
         return 1
       }
       
-      # Drop and recreate main database using shadow
-      bgd_log "Swapping database content" "info"
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" << EOF || {
-        # Release the lock in case of failure
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "UNLOCK TABLES;"
-        bgd_log "Failed to swap databases" "error"
+      # Also export the shadow database that will become the new main db
+      local shadow_export="${shadow_db_name}_export.sql"
+      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$shadow_db_name" > "$shadow_export" || {
+        bgd_log "Failed to export shadow database" "error"
         return 1
       }
--- Drop and recreate main database
-DROP DATABASE \`$DB_NAME\`;
-CREATE DATABASE \`$DB_NAME\`;
-
--- Copy data from shadow to main (will be done with mysqldump after this block)
--- Create a new shadow database for future use
-DROP DATABASE IF EXISTS \`$shadow_db_name\`;
-CREATE DATABASE \`$shadow_db_name\`;
-
--- Release the lock
-UNLOCK TABLES;
-EOF
       
-      # Import data from shadow to main database
-      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$shadow_db_name" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" || {
-        bgd_log "Failed to copy data from shadow to main database" "error"
-        return 1
-      }
+      # Lock tables to prevent writes during the swap
+      bgd_log "Locking tables during database swap" "info"
+      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "FLUSH TABLES WITH READ LOCK; UNLOCK TABLES;"
+      
+      # Drop and recreate databases
+      bgd_log "Recreating databases for swap" "info"
+      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$DB_NAME\`; CREATE DATABASE \`$DB_NAME\`; DROP DATABASE IF EXISTS \`$shadow_db_name\`; CREATE DATABASE \`$shadow_db_name\`;"
+      
+      # Import the shadow data into the main db
+      bgd_log "Importing shadow data to main database" "info"
+      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" < "$shadow_export"
+      
+      # Clean up export files
+      rm -f "$shadow_export"
       
       bgd_log "MySQL database swap completed successfully" "success"
       ;;
+    
     *)
       bgd_log "Unsupported database type: $DB_TYPE" "error"
       return 1
