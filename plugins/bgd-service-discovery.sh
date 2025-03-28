@@ -124,7 +124,7 @@ bgd_hook_post_cutover() {
     # Update registry to reflect cutover
     local registry_file="${SERVICE_REGISTRY_FILE:-service-registry.json}"
     if [ -f "$registry_file" ] && command -v jq &> /dev/null; then
-      local tmp_file=$(mktemp)
+      local tmp_file="$(mktemp)"
       jq --arg name "$APP_NAME" \
          --arg env "$target_env" \
          '.services[$name].active = true | .services[$name].environment = $env' \
@@ -144,7 +144,7 @@ bgd_hook_post_rollback() {
     # Update registry to reflect rollback
     local registry_file="${SERVICE_REGISTRY_FILE:-service-registry.json}"
     if [ -f "$registry_file" ] && command -v jq &> /dev/null; then
-      local tmp_file=$(mktemp)
+      local tmp_file="$(mktemp)"
       jq --arg name "$APP_NAME" \
          --arg env "$rollback_env" \
          '.services[$name].active = true | .services[$name].environment = $env | .services[$name].rollback = true' \

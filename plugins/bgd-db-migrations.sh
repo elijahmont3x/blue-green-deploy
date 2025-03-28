@@ -250,13 +250,20 @@ EOF
 DROP DATABASE \`$DB_NAME\`;
 CREATE DATABASE \`$DB_NAME\`;
 
--- Drop and recreate shadow database for future use
-RENAME DATABASE \`$shadow_db_name\` TO \`$DB_NAME\`;
+-- Copy data from shadow to main (will be done with mysqldump after this block)
+-- Create a new shadow database for future use
+DROP DATABASE IF EXISTS \`$shadow_db_name\`;
 CREATE DATABASE \`$shadow_db_name\`;
 
 -- Release the lock
 UNLOCK TABLES;
 EOF
+      
+      # Import data from shadow to main database
+      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$shadow_db_name" | mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" || {
+        bgd_log "Failed to copy data from shadow to main database" "error"
+        return 1
+      }
       
       bgd_log "MySQL database swap completed successfully" "success"
       ;;
