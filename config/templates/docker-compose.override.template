@@ -13,8 +13,9 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
     ports:
-      - ${NGINX_PORT:-80}:80
-      - ${NGINX_SSL_PORT:-443}:443
+      # Map the ports properly for the master proxy to access
+      - ${NGINX_PORT}:${NGINX_PORT}
+      - ${NGINX_SSL_PORT}:${NGINX_SSL_PORT}
     networks:
       - env-network
       - shared-network

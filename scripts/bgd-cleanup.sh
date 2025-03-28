@@ -35,6 +35,7 @@ CLEANUP OPTIONS:
   --cleanup-volumes         Clean up volumes (excluding persistent volumes)
   --cleanup-orphans         Clean up orphaned containers
   --cleanup-all-resources   Clean up all resources (networks, volumes, containers)
+  --force-all               Aggressively clean ALL resources, including those using ports 80/443
 
 ADVANCED OPTIONS:
   --dry-run                 Only show what would be cleaned without actually removing anything
@@ -47,8 +48,8 @@ EXAMPLES:
   # Clean up old environments and orphaned resources
   ./bgd-cleanup.sh --app-name=myapp --old-only --cleanup-orphans
 
-  # Simulate cleaning up all resources
-  ./bgd-cleanup.sh --app-name=myapp --cleanup-all-resources --dry-run
+  # Aggressively clean everything including port conflicts
+  ./bgd-cleanup.sh --app-name=myapp --force-all
 
 =================================================================
 EOL
@@ -127,6 +128,34 @@ bgd_cleanup_volumes() {
   fi
 }
 
+# Clean up containers using ports 80 or 443
+bgd_cleanup_port_conflicts() {
+  bgd_log "Checking for containers using ports 80 or 443..." "info"
+  
+  # Find containers using ports 80 or 443
+  local containers_80=$(docker ps --format "{{.Names}}" -f "publish=80" || true)
+  local containers_443=$(docker ps --format "{{.Names}}" -f "publish=443" || true)
+  
+  if [ -n "$containers_80" ] || [ -n "$containers_443" ]; then
+    bgd_log "Found containers using standard web ports:" "warning"
+    [ -n "$containers_80" ] && bgd_log "Port 80: $containers_80" "info"
+    [ -n "$containers_443" ] && bgd_log "Port 443: $containers_443" "info"
+    
+    if [ "${DRY_RUN:-false}" = "true" ]; then
+      bgd_log "Would stop containers using ports 80/443" "info"
+    else
+      # Stop and remove containers
+      for container in $containers_80 $containers_443; do
+        bgd_log "Stopping container: $container" "info"
+        docker stop "$container" && docker rm "$container" || bgd_log "Failed to remove container $container" "warning"
+      done
+      bgd_log "Removed containers using ports 80/443" "success"
+    fi
+  else
+    bgd_log "No containers found using ports 80/443" "info"
+  fi
+}
+
 # Main cleanup function
 bgd_cleanup() {
   # Check for help flag first
@@ -138,10 +167,28 @@ bgd_cleanup() {
   # Parse command-line parameters
   bgd_parse_parameters "$@"
   
+  # Call cleanup hook with force flag if --force is specified
+  if type bgd_hook_cleanup &>/dev/null; then
+    bgd_hook_cleanup "$APP_NAME" "${FORCE:-false}"
+  fi
+  
   # Additional validation for required parameters
   if [ -z "${APP_NAME:-}" ]; then
     bgd_handle_error "missing_parameter" "APP_NAME"
     return 1
+  fi
+
+  # If force-all is specified, do an aggressive cleanup
+  if [ "${FORCE_ALL:-false}" = "true" ]; then
+    bgd_log "Force-all specified, performing aggressive cleanup..." "warning"
+    
+    # Clean up any containers using ports 80/443 first
+    bgd_cleanup_port_conflicts
+    
+    # Force other options
+    FORCE=true
+    CLEAN_ALL=true
+    CLEANUP_ALL_RESOURCES=true
   fi
 
   bgd_log "Starting cleanup for $APP_NAME" "info"
@@ -182,20 +229,20 @@ bgd_cleanup() {
   
   # Process each environment
   for ENV in $PROJECTS; do
-    # Skip active environment unless --all is specified
-    if [ "$ENV" = "$ACTIVE_ENV" ] && [ "${CLEAN_ALL:-false}" != "true" ]; then
+    # Skip active environment unless --all or --force-all is specified
+    if [ "$ENV" = "$ACTIVE_ENV" ] && [ "${CLEAN_ALL:-false}" != "true" ] && [ "${FORCE_ALL:-false}" != "true" ]; then
       bgd_log "Skipping active environment: ${APP_NAME}-${ENV}" "info"
       continue
     fi
     
     # For --old-only, only clean environments that aren't the active one
-    if [ "${CLEAN_OLD:-false}" = "true" ] && [ "$ENV" = "$ACTIVE_ENV" ]; then
+    if [ "${CLEAN_OLD:-false}" = "true" ] && [ "$ENV" = "$ACTIVE_ENV" ] && [ "${FORCE_ALL:-false}" != "true" ]; then
       bgd_log "Skipping active environment: ${APP_NAME}-${ENV} (--old-only specified)" "info"
       continue
     fi
     
     # For --failed-only, check if the environment is healthy
-    if [ "${CLEAN_FAILED:-false}" = "true" ]; then
+    if [ "${CLEAN_FAILED:-false}" = "true" ] && [ "${FORCE_ALL:-false}" != "true" ]; then
       ENV_PORT=$([[ "$ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
       HEALTH_URL="http://localhost:${ENV_PORT}${HEALTH_ENDPOINT}"
       
@@ -253,8 +300,8 @@ bgd_cleanup() {
     bgd_cleanup_volumes
   fi
   
-  # Clean up shared services if --all is specified
-  if [ "${CLEAN_ALL:-false}" = "true" ] && [ "${DRY_RUN:-false}" != "true" ]; then
+  # Clean up shared services if --all or --force-all is specified
+  if [ "${CLEAN_ALL:-false}" = "true" ] || [ "${FORCE_ALL:-false}" = "true" ] && [ "${DRY_RUN:-false}" != "true" ]; then
     bgd_log "Cleaning shared services" "info"
     
     if [ -f "docker-compose.shared.yml" ]; then
@@ -270,7 +317,7 @@ bgd_cleanup() {
     fi
     
     # Clean up networks and volumes if explicitly requested
-    if [ "${CLEANUP_ALL_RESOURCES:-false}" = "true" ]; then
+    if [ "${CLEANUP_ALL_RESOURCES:-false}" = "true" ] || [ "${FORCE_ALL:-false}" = "true" ]; then
       bgd_log "Removing shared network and volumes" "warning"
       docker network rm ${APP_NAME}-shared-network 2>/dev/null || true
       docker volume rm ${APP_NAME}-db-data 2>/dev/null || true
