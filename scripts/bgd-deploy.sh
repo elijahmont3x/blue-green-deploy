@@ -31,6 +31,12 @@ REQUIRED OPTIONS:
   --app-name=NAME           Application name
   --image-repo=REPO         Docker image repository
 
+PROFILE OPTIONS:
+  --profile=NAME            Specify Docker Compose profile to use (default: env name)
+  --services=LIST           Comma-separated list of services to deploy 
+                           (all profile services deployed if not specified)
+  --include-persistence     Include persistence services in deployment (default: true)
+
 PORT OPTIONS:
   --nginx-port=PORT         Nginx HTTP port (default: 80)
   --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
@@ -59,7 +65,6 @@ HEALTH CHECK OPTIONS:
 
 DEPLOYMENT OPTIONS:
   --domain-name=DOMAIN      Domain name for multi-domain routing
-  --setup-shared            Initialize shared services (database, cache, etc.)
   --skip-migrations         Skip database migrations
   --migrations-cmd=CMD      Custom migrations command
   --force                   Force deployment even if target environment is active
@@ -73,14 +78,14 @@ ADVANCED OPTIONS:
   --slack-webhook=URL       Slack webhook URL for notifications
 
 EXAMPLES:
-  # Basic deployment
+  # Basic deployment using environment profile
   ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
+  
+  # Deploy specific services with explicit profile
+  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --profile=blue --services=app,api
   
   # Deploy with path-based routing
   ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --paths="api:api:3000,admin:admin:3001"
-  
-  # Deploy with subdomain-based routing
-  ./bgd-deploy.sh v1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --subdomains="api:api:3000,admin:admin:3001"
 
 =================================================================
 EOL
@@ -117,6 +122,7 @@ bgd_deploy() {
 
   # Export TARGET_ENV so it's available for hooks and traffic shifting
   export TARGET_ENV
+  export ENV_NAME="$TARGET_ENV"
 
   # Set port based on target environment
   TARGET_PORT=$([[ "$TARGET_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
@@ -144,70 +150,11 @@ bgd_deploy() {
     GREEN_WEIGHT_VALUE=10
   fi
   
-  # CRITICAL FIX: Create valid nginx.conf BEFORE any containers start
+  # Create valid nginx.conf BEFORE any containers start
   bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
 
   # Create directory for SSL certificates if it doesn't exist
   bgd_ensure_directory "certs"
-
-  # Initialize shared services if requested
-  if [ "${SETUP_SHARED:-false}" = "true" ]; then
-    bgd_log "Setting up shared services (database, redis, etc.)" "info"
-    
-    # Create shared network if it doesn't exist
-    if ! docker network inspect "${APP_NAME}-shared-network" &>/dev/null; then
-      bgd_log "Creating shared network: ${APP_NAME}-shared-network" "info"
-      docker network create "${APP_NAME}-shared-network" || bgd_handle_error "network_error" "Failed to create shared network"
-    else
-      bgd_log "Shared network already exists" "info"
-    fi
-    
-    # Create shared volumes if they don't exist
-    if ! docker volume inspect "${APP_NAME}-db-data" &>/dev/null; then
-      bgd_log "Creating database volume: ${APP_NAME}-db-data" "info"
-      docker volume create "${APP_NAME}-db-data" || bgd_handle_error "docker_error" "Failed to create database volume"
-    fi
-    
-    if ! docker volume inspect "${APP_NAME}-redis-data" &>/dev/null; then
-      bgd_log "Creating Redis volume: ${APP_NAME}-redis-data" "info"
-      docker volume create "${APP_NAME}-redis-data" || bgd_handle_error "docker_error" "Failed to create Redis volume"
-    fi
-    
-    # Start shared services
-    bgd_log "Starting shared services" "info"
-    
-    # Create temporary compose file for shared services
-    cat > "docker-compose.shared.yml" << EOL
-version: '3.8'
-name: ${APP_NAME}-shared
-services:
-  db:
-    extends:
-      file: docker-compose.yml
-      service: db
-  redis:
-    extends:
-      file: docker-compose.yml
-      service: redis
-networks:
-  shared-network:
-    external: true
-    name: ${APP_NAME}-shared-network
-volumes:
-  db-data:
-    external: true
-    name: ${APP_NAME}-db-data
-  redis-data:
-    external: true
-    name: ${APP_NAME}-redis-data
-EOL
-    
-    $DOCKER_COMPOSE -f docker-compose.yml -f docker-compose.shared.yml --profile shared up -d || 
-      bgd_handle_error "environment_start_failed" "Failed to start shared services"
-    
-    bgd_log "Shared services started successfully" "success"
-    sleep 5  # Allow services to initialize
-  fi
 
   # Create secure environment file for the target environment
   bgd_create_secure_env_file "$TARGET_ENV" "$TARGET_PORT"
@@ -230,27 +177,110 @@ EOL
 version: '3.8'
 
 services:
-  app:
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - ENV_NAME=${TARGET_ENV}
-    ports:
-      - '${TARGET_PORT}:3000'
-
+  # You can override specific service configurations here
   nginx:
-    container_name: ${APP_NAME}-nginx-${TARGET_ENV}
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
+    container_name: ${APP_NAME}-${TARGET_ENV}-nginx
+    ports:
+      - '${NGINX_PORT}:${NGINX_PORT}'
+      - '${NGINX_SSL_PORT}:${NGINX_SSL_PORT}'
 EOL
   fi
 
-  # Start the new environment
+  # Determine which profile to use
+  if [ -z "${PROFILE:-}" ]; then
+    # If no profile specified, use the target environment name
+    PROFILE="$TARGET_ENV"
+    bgd_log "No profile specified, using environment name as profile: $PROFILE" "info"
+  fi
+  
+  # Log available profiles if discovery is enabled
+  if [ "${AUTO_DISCOVER_PROFILES:-true}" = "true" ] && type bgd_discover_profiles &>/dev/null; then
+    local available_profiles=$(bgd_discover_profiles "docker-compose.yml" 2>/dev/null || echo "none")
+    bgd_log "Available profiles in docker-compose.yml: $available_profiles" "info"
+  fi
+
+  # Process services to deploy
+  if [ -z "${SERVICES:-}" ] && [ "${AUTO_DISCOVER_PROFILES:-true}" = "true" ]; then
+    # Try to auto-discover services in the profile
+    if type bgd_get_profile_services &>/dev/null; then
+      SERVICES=$(bgd_get_profile_services "docker-compose.yml" "$PROFILE")
+      if [ -n "$SERVICES" ]; then
+        SERVICES=$(echo "$SERVICES" | tr '\n' ',' | sed 's/,$//')
+        bgd_log "Auto-discovered services for profile '$PROFILE': $SERVICES" "info"
+      else
+        bgd_log "No services found for profile '$PROFILE' - check your docker-compose.yml configuration" "warning"
+      fi
+    fi
+  fi
+
+  # Log the selected services clearly
+  if [ -n "${SERVICES:-}" ]; then
+    SERVICE_COUNT=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
+    bgd_log "Selected $SERVICE_COUNT services for deployment: $SERVICES" "info"
+  else
+    bgd_log "No specific services selected, deploying all services in profile '$PROFILE'" "info"
+  fi
+
+  # Resolve dependencies if enabled
+  if [ -n "${SERVICES:-}" ] && [ "${AUTO_RESOLVE_DEPENDENCIES:-true}" = "true" ]; then
+    if type bgd_resolve_dependencies &>/dev/null; then
+      bgd_log "Resolving service dependencies..." "info"
+      OLD_SERVICES="$SERVICES"
+      SERVICES=$(bgd_resolve_dependencies "docker-compose.yml" "$SERVICES")
+      
+      if [ "$OLD_SERVICES" != "$SERVICES" ]; then
+        # Calculate and log the newly added dependencies
+        local new_deps=""
+        for svc in $(echo "$SERVICES" | tr ',' ' '); do
+          if ! echo "$OLD_SERVICES" | grep -q "\b$svc\b"; then
+            if [ -n "$new_deps" ]; then
+              new_deps="$new_deps, $svc"
+            else
+              new_deps="$svc"
+            fi
+          fi
+        done
+        
+        if [ -n "$new_deps" ]; then
+          bgd_log "Added dependencies: $new_deps" "info"
+        fi
+        
+        # Log full service list after dependency resolution
+        SERVICE_COUNT=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
+        bgd_log "Final service list ($SERVICE_COUNT services): $SERVICES" "info"
+      else
+        bgd_log "No additional dependencies needed for selected services" "info"
+      fi
+    fi
+  fi
+
+  # Prepare Docker Compose command
+  COMPOSE_CMD="$DOCKER_COMPOSE -p ${APP_NAME}-${TARGET_ENV} --env-file .env.${TARGET_ENV} -f docker-compose.yml -f $DOCKER_COMPOSE_OVERRIDE"
+  
+  # Add profile if specified
+  if [ -n "${PROFILE:-}" ]; then
+    COMPOSE_CMD="$COMPOSE_CMD --profile $PROFILE"
+  fi
+  
+  # Add persistence profile if enabled
+  if [ "${INCLUDE_PERSISTENCE:-true}" = "true" ]; then
+    COMPOSE_CMD="$COMPOSE_CMD --profile persistence"
+  fi
+  
+  # Add service arguments if specified
+  SERVICE_ARGS=""
+  if [ -n "${SERVICES:-}" ]; then
+    # Convert comma-separated list to space-separated for Docker Compose
+    SERVICE_ARGS=$(echo "$SERVICES" | tr ',' ' ')
+  fi
+  
+  # Start the environment
   bgd_log "Starting $TARGET_ENV environment with version $VERSION" "info"
-  $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" --env-file ".env.${TARGET_ENV}" \
-    -f docker-compose.yml -f "$DOCKER_COMPOSE_OVERRIDE" up -d || 
-    bgd_handle_error "environment_start_failed" "Failed to start $TARGET_ENV environment"
+  if [ -n "${SERVICE_ARGS:-}" ]; then
+    $COMPOSE_CMD up -d $SERVICE_ARGS || bgd_handle_error "environment_start_failed" "Failed to start $TARGET_ENV environment"
+  else
+    $COMPOSE_CMD up -d || bgd_handle_error "environment_start_failed" "Failed to start $TARGET_ENV environment"
+  fi
 
   bgd_log "Environment started successfully" "success"
   bgd_log_deployment_event "$VERSION" "environment_started" "success"
@@ -262,11 +292,27 @@ EOL
     # Default migration command if not specified
     local migrations_cmd="${MIGRATIONS_CMD:-npm run migrate}"
     
-    # Execute migrations within the container
-    $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" exec -T app sh -c "$migrations_cmd" || 
-      bgd_handle_error "database_error" "Database migrations failed"
+    # Find the appropriate container to run migrations on
+    local migration_container=""
     
-    bgd_log "Database migrations completed successfully" "success"
+    # Try app container first, then others
+    potential_containers=("${APP_NAME}-${TARGET_ENV}-app" "${APP_NAME}-${TARGET_ENV}-api" "${APP_NAME}-${TARGET_ENV}-backend")
+    for container in "${potential_containers[@]}"; do
+      if docker ps | grep -q "$container"; then
+        migration_container="$container"
+        break
+      fi
+    done
+    
+    if [ -z "$migration_container" ]; then
+      bgd_log "No suitable container found for migrations" "warning"
+    else
+      # Execute migrations within the container
+      docker exec -t "$migration_container" sh -c "$migrations_cmd" || 
+        bgd_handle_error "database_error" "Database migrations failed"
+      
+      bgd_log "Database migrations completed successfully" "success"
+    fi
   else
     bgd_log "Skipping database migrations as requested" "info"
   fi
@@ -309,7 +355,7 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
@@ -321,7 +367,7 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
@@ -340,7 +386,7 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     
     bgd_log "Traffic gradually shifted to new $TARGET_ENV environment" "success"
@@ -356,6 +402,43 @@ EOL
   fi
 
   bgd_log_deployment_event "$VERSION" "deployment_completed" "success"
+  
+  # Print deployment summary
+  bgd_log "===== DEPLOYMENT SUMMARY =====" "info"
+  bgd_log "Version: $VERSION" "info"
+  bgd_log "Target Environment: $TARGET_ENV" "info"
+  bgd_log "Profile: $PROFILE" "info"
+  
+  # Count deployed services
+  local deployed_services_count=0
+  if [ -n "${SERVICES:-}" ]; then
+    deployed_services_count=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
+    bgd_log "Deployed Services: $deployed_services_count ($SERVICES)" "info"
+  else
+    # Try to count from running containers
+    deployed_services_count=$(docker ps --filter "name=${APP_NAME}-${TARGET_ENV}" | wc -l)
+    bgd_log "Deployed Services: $deployed_services_count (all profile services)" "info"
+  fi
+  
+  # Check persistence status
+  if [ "${INCLUDE_PERSISTENCE:-true}" = "true" ]; then
+    local db_status="Not running"
+    if docker ps | grep -q "${APP_NAME}-db"; then
+      db_status="Running"
+    fi
+    bgd_log "Persistence Services: Included (Database: $db_status)" "info"
+  else
+    bgd_log "Persistence Services: Not included" "info"
+  fi
+  
+  # Traffic status
+  if [ "${NO_SHIFT:-false}" != "true" ]; then
+    bgd_log "Traffic: Gradually shifted to $TARGET_ENV" "info"
+  else
+    bgd_log "Traffic: No automatic shift (manual cutover required)" "info"
+  fi
+  
+  bgd_log "================================" "info"
   bgd_log "Deployment of version $VERSION to $TARGET_ENV environment completed successfully" "success"
   
   return 0

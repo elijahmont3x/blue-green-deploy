@@ -399,7 +399,7 @@ bgd_validate_routing_parameters() {
     IFS=',' read -ra PATH_MAPPINGS <<< "$PATHS"
     for mapping in "${PATH_MAPPINGS[@]}"; do
       # Skip empty mappings
-      if [ -z "$mapping" ]; then
+      if [ -z "$mapping" ];then
         continue
       fi
       
@@ -738,7 +738,7 @@ bgd_is_port_available() {
   # Primary approach: Try direct socket test
   # If we can connect, port is in use (return 1/false)
   # If connection fails, port is available (return 0/true)
-  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then # Fixed typo: /dev/ttcp to /dev/tcp
+  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
     # Connection successful, port is in use
     return 1
   fi

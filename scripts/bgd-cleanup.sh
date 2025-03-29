@@ -27,6 +27,10 @@ USAGE:
 REQUIRED OPTIONS:
   --app-name=NAME           Application name
 
+PROFILE OPTIONS:
+  --profile=NAME            Specify Docker Compose profile to clean up
+  --all-profiles            Clean up all profiles
+
 CLEANUP OPTIONS:
   --all                     Clean up everything including current active environment
   --failed-only             Clean up only failed deployments
@@ -35,6 +39,7 @@ CLEANUP OPTIONS:
   --cleanup-volumes         Clean up volumes (excluding persistent volumes)
   --cleanup-orphans         Clean up orphaned containers
   --cleanup-all-resources   Clean up all resources (networks, volumes, containers)
+  --preserve-persistence    Preserve persistence profile services (default: true)
   --force-all               Aggressively clean ALL resources, including those using ports 80/443
 
 ADVANCED OPTIONS:
@@ -109,8 +114,19 @@ bgd_cleanup_orphaned_networks() {
 bgd_cleanup_volumes() {
   bgd_log "Cleaning up volumes for ${APP_NAME}" "info"
   
+  # Determine which volumes to exclude
+  local exclude_volumes=""
+  if [ "${PRESERVE_PERSISTENCE:-true}" = "true" ]; then
+    exclude_volumes="${APP_NAME}-db-data\|${APP_NAME}-redis-data\|${APP_NAME}-prometheus-data\|${APP_NAME}-grafana-data"
+  fi
+  
   # Find volumes that match app name (excluding those we want to keep)
-  local app_volumes=$(docker volume ls --filter "name=${APP_NAME}" --format "{{.Name}}" | grep -v "${APP_NAME}-db-data\|${APP_NAME}-redis-data" || true)
+  local app_volumes=""
+  if [ -n "$exclude_volumes" ]; then
+    app_volumes=$(docker volume ls --filter "name=${APP_NAME}" --format "{{.Name}}" | grep -v "$exclude_volumes" || true)
+  else
+    app_volumes=$(docker volume ls --filter "name=${APP_NAME}" --format "{{.Name}}" || true)
+  fi
   
   if [ -n "$app_volumes" ]; then
     bgd_log "Found volumes: $app_volumes" "info"
@@ -189,6 +205,7 @@ bgd_cleanup() {
     FORCE=true
     CLEAN_ALL=true
     CLEANUP_ALL_RESOURCES=true
+    PRESERVE_PERSISTENCE=false
   fi
 
   bgd_log "Starting cleanup for $APP_NAME" "info"
@@ -199,11 +216,29 @@ bgd_cleanup() {
   # Determine which environment is active
   read ACTIVE_ENV INACTIVE_ENV <<< $(bgd_get_environments)
   
+  # Determine profiles to clean
+  PROFILES=""
+  if [ -n "${PROFILE:-}" ]; then
+    PROFILES="$PROFILE"
+  elif [ "${ALL_PROFILES:-false}" = "true" ]; then
+    # Try to discover all profiles
+    if type bgd_discover_profiles &>/dev/null && [ -f "docker-compose.yml" ]; then
+      PROFILES=$(bgd_discover_profiles "docker-compose.yml" | tr '\n' ' ')
+      bgd_log "Discovered profiles: $PROFILES" "info"
+    else
+      # Default to blue and green as basic profiles
+      PROFILES="blue green"
+    fi
+  else
+    # Default to blue and green as basic profiles
+    PROFILES="blue green"
+  fi
+  
   # List all containers for this app
   bgd_log "Listing environments for ${APP_NAME}" "info"
   
   # Collect all project names that match our app name pattern
-  PROJECTS=$(docker ps -a --format "{{.Names}}" | grep -E "^${APP_NAME}-(blue|green)" | cut -d- -f2 | sort -u)
+  PROJECTS=$(docker ps -a --format "{{.Names}}" | grep -E "^${APP_NAME}-(blue|green)" | sed "s/${APP_NAME}-//" | sed "s/-.*$//" | sort -u)
   
   if [ -z "$PROJECTS" ]; then
     bgd_log "No environments found for ${APP_NAME}" "info"
@@ -258,7 +293,18 @@ bgd_cleanup() {
     if [ "${DRY_RUN:-false}" = "true" ]; then
       bgd_log "Would run: $DOCKER_COMPOSE -p ${APP_NAME}-${ENV} down" "info"
     else
-      $DOCKER_COMPOSE -p ${APP_NAME}-${ENV} down
+      # Create profile arguments
+      PROFILE_ARGS=""
+      for profile in $PROFILES; do
+        PROFILE_ARGS="$PROFILE_ARGS --profile $profile"
+      done
+      
+      # Clean up the environment with profiles
+      if [ -n "${PROFILE_ARGS:-}" ]; then
+        $DOCKER_COMPOSE -p ${APP_NAME}-${ENV} $PROFILE_ARGS down
+      else
+        $DOCKER_COMPOSE -p ${APP_NAME}-${ENV} down
+      fi
       
       # Delete environment file if it exists
       if [ -f ".env.${ENV}" ]; then
@@ -300,28 +346,22 @@ bgd_cleanup() {
     bgd_cleanup_volumes
   fi
   
-  # Clean up shared services if --all or --force-all is specified
-  if [ "${CLEAN_ALL:-false}" = "true" ] || [ "${FORCE_ALL:-false}" = "true" ] && [ "${DRY_RUN:-false}" != "true" ]; then
-    bgd_log "Cleaning shared services" "info"
+  # Clean up persistence services if requested
+  if [ "${PRESERVE_PERSISTENCE:-true}" = "false" ] && [ "${DRY_RUN:-false}" != "true" ]; then
+    bgd_log "Cleaning up persistence services" "info"
     
-    if [ -f "docker-compose.shared.yml" ]; then
-      $DOCKER_COMPOSE -f docker-compose.shared.yml down || true
-      rm -f docker-compose.shared.yml
+    # Run docker-compose with persistence profile to bring it down
+    if [ -f "docker-compose.yml" ]; then
+      $DOCKER_COMPOSE --profile persistence down || true
     fi
     
-    # Check if shared services are running and stop them
-    if docker ps --format "{{.Names}}" | grep -q "${APP_NAME}-shared"; then
-      bgd_log "Stopping shared services" "info"
-      docker stop $(docker ps --format "{{.Names}}" | grep "${APP_NAME}-shared") || true
-      docker rm $(docker ps -a --format "{{.Names}}" | grep "${APP_NAME}-shared") || true
-    fi
-    
-    # Clean up networks and volumes if explicitly requested
+    # Clean up persistence volumes if not preserved
     if [ "${CLEANUP_ALL_RESOURCES:-false}" = "true" ] || [ "${FORCE_ALL:-false}" = "true" ]; then
-      bgd_log "Removing shared network and volumes" "warning"
-      docker network rm ${APP_NAME}-shared-network 2>/dev/null || true
-      docker volume rm ${APP_NAME}-db-data 2>/dev/null || true
-      docker volume rm ${APP_NAME}-redis-data 2>/dev/null || true
+      bgd_log "Removing persistence volumes" "warning"
+      
+      for volume in db-data redis-data prometheus-data grafana-data; do
+        docker volume rm ${APP_NAME}-${volume} 2>/dev/null || true
+      done
     fi
   fi
   

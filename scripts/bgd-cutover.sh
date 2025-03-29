@@ -30,6 +30,9 @@ ARGUMENTS:
 REQUIRED OPTIONS:
   --app-name=NAME           Application name
 
+PROFILE OPTIONS:
+  --profile=NAME            Specify Docker Compose profile to use (default: env name)
+
 ROUTING OPTIONS:
   --paths=LIST              Path:service:port mappings (comma-separated)
                            Example: "api:backend:3000,dashboard:frontend:80"
@@ -112,7 +115,7 @@ bgd_cutover() {
   fi
 
   # Check if target environment is running
-  if ! $DOCKER_COMPOSE -p "${APP_NAME}-${TARGET_ENV}" ps 2>/dev/null | grep -q "Up"; then
+  if ! docker ps | grep -q "${APP_NAME}-${TARGET_ENV}"; then
     bgd_handle_error "environment_start_failed" "Target environment ($TARGET_ENV) is not running"
     return 1
   fi
@@ -132,14 +135,36 @@ bgd_cutover() {
   # Use single-env template for direct routing
   bgd_create_single_env_nginx_conf "$TARGET_ENV"
 
-  # Reload nginx configuration
-  bgd_log "Reloading nginx" "info"
-  $DOCKER_COMPOSE restart nginx || bgd_log "Failed to restart nginx" "warning"
+  # Apply Nginx configuration
+  if docker ps | grep -q "${APP_NAME}-${ACTIVE_ENV}-nginx"; then
+    # Reload configuration on active nginx
+    bgd_log "Reloading nginx on $ACTIVE_ENV" "info"
+    docker cp nginx.conf "${APP_NAME}-${ACTIVE_ENV}-nginx:/etc/nginx/nginx.conf"
+    docker exec "${APP_NAME}-${ACTIVE_ENV}-nginx" nginx -s reload
+
+    # Allow connections to drain from old configuration
+    bgd_log "Allowing connections to drain (5s)..." "info"
+    sleep 5
+  fi
+  
+  if docker ps | grep -q "${APP_NAME}-${TARGET_ENV}-nginx"; then
+    # Also ensure target environment nginx has the config
+    bgd_log "Updating nginx on $TARGET_ENV" "info"
+    docker cp nginx.conf "${APP_NAME}-${TARGET_ENV}-nginx:/etc/nginx/nginx.conf"
+    docker exec "${APP_NAME}-${TARGET_ENV}-nginx" nginx -s reload
+  fi
 
   # Stop the previous environment unless --keep-old is specified
   if [ "${KEEP_OLD:-false}" != "true" ]; then
     bgd_log "Stopping inactive $ACTIVE_ENV environment" "info"
-    $DOCKER_COMPOSE -p "${APP_NAME}-${ACTIVE_ENV}" down || {
+    
+    # Determine profile if specified
+    PROFILE_ARGS=""
+    if [ -n "${PROFILE:-}" ]; then
+      PROFILE_ARGS="--profile $PROFILE"
+    fi
+    
+    $DOCKER_COMPOSE -p "${APP_NAME}-${ACTIVE_ENV}" $PROFILE_ARGS down || {
       bgd_log "Failed to stop $ACTIVE_ENV environment, continuing anyway" "warning"
     }
   else

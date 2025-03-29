@@ -2,20 +2,40 @@
 version: '3.8'
 
 services:
-  # Service overrides - automatically populated by bgd-deploy.sh
-  # This template avoids any assumptions about your service structure
+  # Environment-specific service overrides
+  app:
+    # Ensure this service uses the environment profile
+    profiles: ["{{ENV_NAME}}"]
+    environment:
+      - ENV_NAME={{ENV_NAME}}
+      # Add any environment-specific variables here
   
-  # We only provide explicit Nginx configuration
+  api:
+    # Ensure this service uses the environment profile
+    profiles: ["{{ENV_NAME}}"]
+    environment:
+      - ENV_NAME={{ENV_NAME}}
+      # Add any environment-specific variables here
+  
+  # Nginx configuration for this environment
   nginx:
-    # Environment-specific container name to avoid conflicts
-    container_name: ${APP_NAME}-nginx-{{ENV_NAME}}
+    container_name: ${APP_NAME}-{{ENV_NAME}}-nginx
+    profiles: ["{{ENV_NAME}}"]
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro
     ports:
-      # Map the ports properly for the master proxy to access
       - ${NGINX_PORT}:${NGINX_PORT}
       - ${NGINX_SSL_PORT}:${NGINX_SSL_PORT}
     networks:
       - env-network
       - shared-network
+
+networks:
+  # Environment-specific network
+  env-network:
+    name: ${APP_NAME}-{{ENV_NAME}}-network
+  # Shared network across environments
+  shared-network:
+    name: ${APP_NAME}-shared-network
+    external: true

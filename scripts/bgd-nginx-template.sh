@@ -24,8 +24,8 @@ bgd_generate_dual_upstreams() {
   
   # Special case for default upstream
   upstreams+="upstream default_upstream {\n"
-  upstreams+="    server ${app_name}-blue-${DEFAULT_SERVICE:-app}-1:${DEFAULT_PORT:-3000} weight=${blue_weight};\n"
-  upstreams+="    server ${app_name}-green-${DEFAULT_SERVICE:-app}-1:${DEFAULT_PORT:-3000} weight=${green_weight};\n"
+  upstreams+="    server ${app_name}-blue-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000} weight=${blue_weight};\n"
+  upstreams+="    server ${app_name}-green-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000} weight=${green_weight};\n"
   upstreams+="}\n\n"
   
   # Process each service
@@ -44,8 +44,8 @@ bgd_generate_dual_upstreams() {
       local port="${PARTS[2]}"
       
       upstreams+="upstream ${name}_upstream {\n"
-      upstreams+="    server ${app_name}-blue-${service}-1:${port} weight=${blue_weight};\n"
-      upstreams+="    server ${app_name}-green-${service}-1:${port} weight=${green_weight};\n"
+      upstreams+="    server ${app_name}-blue-${service}:${port} weight=${blue_weight};\n"
+      upstreams+="    server ${app_name}-green-${service}:${port} weight=${green_weight};\n"
       upstreams+="}\n\n"
     fi
   done
@@ -65,7 +65,7 @@ bgd_generate_single_upstreams() {
   
   # Special case for default upstream
   upstreams+="upstream ${env_name}_default {\n"
-  upstreams+="    server ${app_name}-${env_name}-${DEFAULT_SERVICE:-app}-1:${DEFAULT_PORT:-3000};\n"
+  upstreams+="    server ${app_name}-${env_name}-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000};\n"
   upstreams+="}\n\n"
   
   # Process each service
@@ -74,7 +74,7 @@ bgd_generate_single_upstreams() {
     # Skip empty mappings
     if [ -z "$mapping" ]; then
       continue
-    fi # Changed 'end' to 'fi' - syntax error fix
+    fi
     
     # Parse the mapping (name:service:port)
     IFS=':' read -ra PARTS <<< "$mapping"
@@ -84,7 +84,7 @@ bgd_generate_single_upstreams() {
       local port="${PARTS[2]}"
       
       upstreams+="upstream ${env_name}_${name} {\n"
-      upstreams+="    server ${app_name}-${env_name}-${service}-1:${port};\n"
+      upstreams+="    server ${app_name}-${env_name}-${service}:${port};\n"
       upstreams+="}\n\n"
     fi
   done
@@ -205,7 +205,7 @@ bgd_generate_subdomain_servers() {
         # Create a subdomain-specific upstream
         servers+="        proxy_pass http://${subdomain}_upstream;\n"
       else
-        servers+="        proxy_pass http://${app_name}-${env_name}-${service}-1:${port};\n"
+        servers+="        proxy_pass http://${app_name}-${env_name}-${service}:${port};\n"
       fi
       
       # Common proxy settings
