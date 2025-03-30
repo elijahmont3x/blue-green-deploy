@@ -112,13 +112,13 @@ bgd_get_profile_services() {
     echo "$services"
     return 0
   else
-    # Fallback method - less accurate but workable
+    # Fallback method - more accurate pattern matching
     local services=""
     while IFS= read -r line; do
-      if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_-]+): ]]; then
+      if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_\-]+): ]]; then
         service="${BASH_REMATCH[1]}"
-        # Look for profiles section
-        if grep -A 5 "^[[:space:]]*$service:" "$compose_file" | grep -q "$profile"; then
+        # More precise pattern matching with context for finding profiles
+        if grep -A 10 "^[[:space:]]*$service:" "$compose_file" | grep -A 2 "profiles:" | grep -q "$profile"; then
           services="$services $service"
         fi
       fi
@@ -372,14 +372,19 @@ bgd_hook_pre_deploy() {
   if [ "${VALIDATE_PROFILES:-true}" = "true" ]; then
     bgd_validate_profiles "docker-compose.yml" || {
       bgd_log "Profile validation failed, continuing anyway" "warning"
+      # Don't return error to allow compatibility with non-profile setups
     }
   fi
   
   # Auto-resolve dependencies if enabled and services specified
   if [ "${AUTO_RESOLVE_DEPENDENCIES:-true}" = "true" ] && [ -n "${SERVICES:-}" ]; then
-    SERVICES=$(bgd_resolve_dependencies "docker-compose.yml" "$SERVICES")
-    export SERVICES
-    bgd_log "Resolved service dependencies: $SERVICES" "info"
+    local resolved_services=$(bgd_resolve_dependencies "docker-compose.yml" "$SERVICES")
+    if [ $? -eq 0 ] && [ -n "$resolved_services" ]; then
+      export SERVICES="$resolved_services"
+      bgd_log "Resolved service dependencies: $SERVICES" "info"
+    else
+      bgd_log "Failed to resolve dependencies, using original services list" "warning"
+    fi
   fi
   
   return 0

@@ -25,6 +25,7 @@ http {
     
     # DYNAMIC_UPSTREAMS
     # This section will be populated with dynamically generated upstream blocks
+    # based on actual containers detected at deploy time
     
     # HTTP server - redirects to HTTPS
     server {
@@ -59,10 +60,12 @@ http {
         
         # DYNAMIC_PATH_ROUTES
         # This section will be populated with dynamically generated location blocks
+        # based on the 'paths' parameter
         
         # Default location
         location / {
-            # DEFAULT_UPSTREAM
+            # This will be replaced with the environment-specific default upstream
+            # determined at runtime based on service discovery
             proxy_pass http://ENV_NAME_default;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
@@ -73,4 +76,5 @@ http {
     
     # DYNAMIC_SUBDOMAIN_SERVERS
     # This section will be populated with dynamically generated server blocks for subdomains
+    # based on the 'subdomains' parameter
 }

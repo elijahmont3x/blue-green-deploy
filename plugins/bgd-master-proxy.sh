@@ -11,6 +11,129 @@ bgd_register_master_proxy_arguments() {
   bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_DIR" "/app/master-proxy"
   bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_REGISTRY" "${MASTER_PROXY_DIR}/app-registry.json"
   bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_CONTAINER" "bgd-master-proxy"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_PORT" "80"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_SSL_PORT" "443"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_AUTO_SETUP" "true"
+}
+
+# Check if master proxy is initialized
+bgd_check_master_proxy() {
+  # Check if the container is running
+  if docker ps -q --filter "name=${MASTER_PROXY_CONTAINER:-bgd-master-proxy}" | grep -q .; then
+    return 0
+  fi
+  return 1
+}
+
+# Initialize the master proxy if not already set up
+bgd_init_master_proxy() {
+  # Skip if not enabled
+  if [ "${MASTER_PROXY_ENABLED:-true}" != "true" ]; then
+    return 0
+  fi
+  
+  # Check if already running
+  if bgd_check_master_proxy; then
+    bgd_log "Master proxy already running" "debug"
+    return 0
+  fi
+  
+  # Skip auto-setup if disabled
+  if [ "${MASTER_PROXY_AUTO_SETUP:-true}" != "true" ]; then
+    bgd_log "Master proxy not initialized, but auto-setup is disabled" "warning"
+    return 1
+  fi
+  
+  bgd_log "Initializing master proxy automatically" "info"
+  
+  # Set up directory structure
+  local proxy_dir="${MASTER_PROXY_DIR:-/app/master-proxy}"
+  local registry_file="${proxy_dir}/app-registry.json"
+  local container_name="${MASTER_PROXY_CONTAINER:-bgd-master-proxy}"
+  local proxy_port="${MASTER_PROXY_PORT:-80}"
+  local proxy_ssl_port="${MASTER_PROXY_SSL_PORT:-443}"
+  
+  # Ensure permissions for directory creation
+  if ! bgd_ensure_directory "${proxy_dir}"; then
+    bgd_log "Failed to create master proxy directory: ${proxy_dir}. Check permissions." "error"
+    return 1
+  fi
+  
+  # Check for port conflicts before starting
+  if ! bgd_is_port_available "$proxy_port"; then
+    bgd_log "Port $proxy_port is already in use. Cannot start master proxy." "error"
+    return 1
+  fi
+  
+  if ! bgd_is_port_available "$proxy_ssl_port"; then
+    bgd_log "Port $proxy_ssl_port is already in use. Cannot start master proxy." "error"
+    return 1
+  fi
+  
+  # Ensure directories exist
+  bgd_ensure_directory "${proxy_dir}/certs"
+  bgd_ensure_directory "${proxy_dir}/logs"
+  
+  # Create initial registry if needed
+  if [ ! -f "$registry_file" ]; then
+    echo '{"applications":[]}' > "$registry_file"
+  fi
+  
+  # Create initial configuration
+  cat > "${proxy_dir}/nginx.conf" << EOL
+# Master NGINX configuration
+# Initially created $(date)
+
+worker_processes auto;
+events {
+    worker_connections 1024;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    
+    sendfile        on;
+    keepalive_timeout  65;
+    
+    access_log  /var/log/nginx/access.log;
+    error_log   /var/log/nginx/error.log;
+    
+    # Default server
+    server {
+        listen ${proxy_port} default_server;
+        listen [::]:${proxy_port} default_server;
+        
+        server_name _;
+        
+        location / {
+            return 404 "No application configured for this domain.\\n";
+        }
+    }
+}
+EOL
+  
+  # Start the container
+  bgd_log "Starting master proxy container" "info"
+  docker stop "$container_name" 2>/dev/null || true
+  docker rm "$container_name" 2>/dev/null || true
+  
+  docker run -d --name "$container_name" \
+    --restart unless-stopped \
+    -p ${proxy_port}:${proxy_port} -p ${proxy_ssl_port}:${proxy_ssl_port} \
+    -v "${proxy_dir}/nginx.conf:/etc/nginx/nginx.conf:ro" \
+    -v "${proxy_dir}/certs:/etc/nginx/certs:ro" \
+    -v "${proxy_dir}/logs:/var/log/nginx" \
+    nginx:stable-alpine
+  
+  local status=$?
+  if [ $status -ne 0 ]; then
+    bgd_log "Failed to start master proxy container" "error"
+    return 1
+  fi
+  
+  bgd_log "Master proxy initialized successfully" "success"
+  return 0
 }
 
 # Register the application with the master proxy
@@ -20,22 +143,43 @@ bgd_register_app_with_master_proxy() {
   local port="$3"
   local ssl_port="$4"
   
+  # Validate required parameters
+  if [ -z "$app_name" ] || [ -z "$domain_name" ] || [ -z "$port" ]; then
+    bgd_log "Missing required parameters for master proxy registration" "error"
+    return 1
+  fi
+  
   if [ "${MASTER_PROXY_ENABLED:-true}" != "true" ]; then
     bgd_log "Master proxy is disabled, skipping registration" "info"
     return 0
   fi
   
+  # Initialize master proxy if not already running
+  bgd_init_master_proxy || {
+    bgd_log "Failed to initialize master proxy" "error"
+    return 1
+  }
+  
   bgd_log "Registering application with master proxy: $app_name -> $domain_name" "info"
   
   # Ensure master proxy directory exists
   if [ ! -d "${MASTER_PROXY_DIR}" ]; then
-    mkdir -p "${MASTER_PROXY_DIR}/certs"
-    mkdir -p "${MASTER_PROXY_DIR}/logs"
+    mkdir -p "${MASTER_PROXY_DIR}/certs" || {
+      bgd_log "Failed to create master proxy directories" "error"
+      return 1
+    }
+    mkdir -p "${MASTER_PROXY_DIR}/logs" || {
+      bgd_log "Failed to create master proxy log directory" "error" 
+      return 1
+    }
   fi
   
   # Initialize registry if needed
   if [ ! -f "${MASTER_PROXY_REGISTRY}" ]; then
-    echo '{"applications":[]}' > "${MASTER_PROXY_REGISTRY}"
+    echo '{"applications":[]}' > "${MASTER_PROXY_REGISTRY}" || {
+      bgd_log "Failed to create master proxy registry" "error"
+      return 1
+    }
   fi
   
   # Update registry
@@ -52,7 +196,11 @@ bgd_register_app_with_master_proxy() {
          --arg port "$port" \
          --arg ssl_port "$ssl_port" \
          '.applications = [.applications[] | if .name == $name then {"name": $name, "domain": $domain, "port": $port, "ssl_port": $ssl_port, "active": true} else . end]' \
-         "${MASTER_PROXY_REGISTRY}" > "$tmp_file"
+         "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
+        bgd_log "Failed to update master proxy registry" "error"
+        rm -f "$tmp_file"
+        return 1
+      }
     else
       # Add new entry
       jq --arg name "$app_name" \
@@ -60,24 +208,39 @@ bgd_register_app_with_master_proxy() {
          --arg port "$port" \
          --arg ssl_port "$ssl_port" \
          '.applications += [{"name": $name, "domain": $domain, "port": $port, "ssl_port": $ssl_port, "active": true}]' \
-         "${MASTER_PROXY_REGISTRY}" > "$tmp_file"
-    fi
+         "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
+        bgd_log "Failed to update master proxy registry" "error"
+        rm -f "$tmp_file"
+        return 1
+      }
+    }
     
     # Update the registry file
-    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}"
+    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}" || {
+      bgd_log "Failed to move temp registry to final location" "error"
+      rm -f "$tmp_file"
+      return 1
+    }
   else
     bgd_log "jq not found, unable to update master proxy registry" "warning"
     return 1
   fi
   
   # Generate and update master proxy configuration
-  bgd_update_master_proxy_config
+  bgd_update_master_proxy_config || {
+    bgd_log "Failed to update master proxy configuration" "error"
+    return 1
+  }
   
   # Link SSL certificates if available
   if [ -d "certs" ]; then
     bgd_log "Linking SSL certificates for $app_name" "info"
-    mkdir -p "${MASTER_PROXY_DIR}/certs/$app_name"
-    cp -f certs/* "${MASTER_PROXY_DIR}/certs/$app_name/" 2>/dev/null || true
+    mkdir -p "${MASTER_PROXY_DIR}/certs/$app_name" || {
+      bgd_log "Failed to create certificate directory" "warning"
+    }
+    cp -f certs/* "${MASTER_PROXY_DIR}/certs/$app_name/" 2>/dev/null || {
+      bgd_log "Failed to copy certificates" "warning"
+    }
   fi
   
   return 0
@@ -93,17 +256,15 @@ bgd_unregister_app_from_master_proxy() {
     return 0
   fi
   
-  # Check if there's an active blue/green deployment
+  # Check for any running containers for this app
   if [ "$force" != "true" ]; then
-    # Get Docker Compose command
-    local docker_compose=$(bgd_get_docker_compose_cmd 2>/dev/null || echo "docker compose")
+    # Check if there are any running containers for this app
+    local running_containers=$(docker ps --format "{{.Names}}" | grep "${app_name}" | wc -l)
     
-    # Check if either blue or green environment is running
-    if $docker_compose -p "${app_name}-blue" ps 2>/dev/null | grep -q "Up" || \
-       $docker_compose -p "${app_name}-green" ps 2>/dev/null | grep -q "Up"; then
-      bgd_log "Active deployment detected for $app_name, skipping unregistration" "warning"
+    if [ "$running_containers" -gt 0 ]; then
+      bgd_log "Found $running_containers running containers for $app_name, skipping unregistration" "warning"
       return 0
-    fi
+    }
   fi
   
   bgd_log "Unregistering application from master proxy: $app_name" "info"
@@ -121,17 +282,27 @@ bgd_unregister_app_from_master_proxy() {
     # Mark app as inactive
     jq --arg name "$app_name" \
        '.applications = [.applications[] | if .name == $name then .active = false else . end]' \
-       "${MASTER_PROXY_REGISTRY}" > "$tmp_file"
+       "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
+      bgd_log "Failed to update master proxy registry" "error"
+      rm -f "$tmp_file"
+      return 1
+    }
     
     # Update the registry file
-    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}"
+    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}" || {
+      bgd_log "Failed to move temp registry to final location" "error"
+      rm -f "$tmp_file"
+      return 1
+    }
   else
     bgd_log "jq not found, unable to update master proxy registry" "warning"
     return 1
   fi
   
   # Update master proxy configuration
-  bgd_update_master_proxy_config
+  bgd_update_master_proxy_config || {
+    bgd_log "Failed to update master proxy configuration" "warning"
+  }
   
   return 0
 }
@@ -304,6 +475,22 @@ bgd_start_or_reload_master_proxy() {
       nginx:stable-alpine || {
       bgd_log "Failed to start master proxy container" "error"
       return 1
+    }
+  fi
+  
+  return 0
+}
+
+# Hook: Check and initialize master proxy at start of deployment
+bgd_hook_pre_deploy() {
+  local version="$1"
+  local app_name="$2"
+  
+  # Initialize master proxy early to avoid surprises later
+  if [ "${MASTER_PROXY_ENABLED:-true}" = "true" ] && [ "${MASTER_PROXY_AUTO_SETUP:-true}" = "true" ]; then
+    bgd_init_master_proxy || {
+      bgd_log "Warning: Master proxy initialization failed during pre-deploy" "warning"
+      # Continue deployment despite warning - will try again during post-deploy
     }
   fi
   

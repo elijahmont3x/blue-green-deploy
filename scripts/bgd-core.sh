@@ -173,6 +173,142 @@ bgd_create_single_env_nginx_conf() {
 }
 
 # ============================================================
+# PROFILE AND DEPLOYMENT MANAGEMENT
+# ============================================================
+
+# Detect if using profiles or project-based approach
+bgd_is_using_profiles() {
+  local compose_file="${1:-docker-compose.yml}"
+  
+  # Check if the file exists
+  if [ ! -f "$compose_file" ]; then
+    bgd_log "Docker Compose file not found: $compose_file" "error"
+    return 1  # Error - can't determine if using profiles
+  fi
+  
+  # Look for profiles in docker-compose.yml
+  if grep -q "profiles:" "$compose_file" 2>/dev/null; then
+    bgd_log "Detected profile-based configuration" "debug"
+    return 0  # Using profiles
+  elif command -v yq &> /dev/null; then
+    if yq eval '.services[] | select(has("profiles"))' "$compose_file" 2>/dev/null | grep -q "profiles:"; then
+      bgd_log "Detected profile-based configuration (via yq)" "debug"
+      return 0  # Using profiles
+    fi
+  fi
+  
+  bgd_log "Using project-based configuration" "debug"
+  return 1  # Not using profiles
+}
+
+# Get appropriate deployment command based on approach
+bgd_get_deployment_cmd() {
+  local env_name="$1"
+  local env_file="${2:-.env.${env_name}}"
+  local profile="${3:-$env_name}"
+  local additional_profiles="${4:-persistence}"
+  
+  # Get Docker Compose command
+  local docker_compose=$(bgd_get_docker_compose_cmd)
+  
+  if bgd_is_using_profiles; then
+    local cmd="$docker_compose --env-file \"$env_file\" -f docker-compose.yml"
+    
+    # Add override file if it exists
+    if [ -f "docker-compose.${env_name}.yml" ]; then
+      cmd="$cmd -f docker-compose.${env_name}.yml"
+    fi
+    
+    # Add profiles
+    cmd="$cmd --profile \"$profile\""
+    
+    # Add additional profiles if specified
+    if [ -n "$additional_profiles" ]; then
+      for p in $(echo "$additional_profiles" | tr ',' ' '); do
+        cmd="$cmd --profile \"$p\""
+      done
+    fi
+    
+    echo "$cmd"
+  else
+    # Legacy project-based approach
+    local cmd="$docker_compose -p \"${APP_NAME}-${env_name}\" --env-file \"$env_file\" -f docker-compose.yml"
+    
+    # Add override file if it exists
+    if [ -f "docker-compose.${env_name}.yml" ]; then
+      cmd="$cmd -f docker-compose.${env_name}.yml"
+    fi
+    
+    echo "$cmd"
+  fi
+}
+
+# Find a suitable container to execute commands
+bgd_find_suitable_container() {
+  local env_name="$1"
+  local preferred_services="${2:-app,api,backend,web}"
+  local command="${3:-sh}"
+  
+  bgd_log "Looking for suitable container in $env_name environment" "debug"
+  
+  # Get a list of running containers for this environment
+  local containers=""
+  if bgd_is_using_profiles; then
+    # Get services from profile
+    if type bgd_get_profile_services &>/dev/null; then
+      local services=$(bgd_get_profile_services "docker-compose.yml" "$env_name")
+      for service in $services; do
+        if docker ps --format "{{.Names}}" | grep -q "${APP_NAME}-.*-${service}"; then
+          containers="$containers $(docker ps --format "{{.Names}}" | grep "${APP_NAME}-.*-${service}")"
+        fi
+      done
+    else
+      # Fallback to listing all containers for app
+      containers=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-.*")
+    fi
+  else
+    # Project-based approach
+    containers=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${env_name}")
+  fi
+  
+  if [ -z "$containers" ]; then
+    bgd_log "No containers found for $env_name environment" "warning"
+    return 1
+  fi
+  
+  # Try preferred services first
+  IFS=',' read -ra SERVICES <<< "$preferred_services"
+  for service in "${SERVICES[@]}"; do
+    for container in $containers; do
+      if echo "$container" | grep -q -E "${service}(-1)?$"; then
+        # Check if command is available in this container
+        if docker exec "$container" which "$command" &>/dev/null; then
+          echo "$container"
+          return 0
+        fi
+      fi
+    done
+  done
+  
+  # If no preferred service found, try any container
+  for container in $containers; do
+    # Skip nginx containers as they usually can't run app commands
+    if echo "$container" | grep -q "nginx"; then
+      continue
+    fi
+    
+    # Check if command is available
+    if docker exec "$container" which "$command" &>/dev/null; then
+      echo "$container"
+      return 0
+    fi
+  done
+  
+  bgd_log "No suitable container found for running '$command' in $env_name environment" "warning"
+  return 1
+}
+
+# ============================================================
 # LOGGING SYSTEM
 # ============================================================
 
@@ -399,7 +535,7 @@ bgd_validate_routing_parameters() {
     IFS=',' read -ra PATH_MAPPINGS <<< "$PATHS"
     for mapping in "${PATH_MAPPINGS[@]}"; do
       # Skip empty mappings
-      if [ -z "$mapping" ];then
+      if [ -z "$mapping" ]; then
         continue
       fi
       

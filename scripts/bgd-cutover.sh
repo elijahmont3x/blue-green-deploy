@@ -136,35 +136,35 @@ bgd_cutover() {
   bgd_create_single_env_nginx_conf "$TARGET_ENV"
 
   # Apply Nginx configuration
-  if docker ps | grep -q "${APP_NAME}-${ACTIVE_ENV}-nginx"; then
+  local active_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${ACTIVE_ENV}-nginx" | head -n1)
+  if [ -n "$active_nginx" ]; then
     # Reload configuration on active nginx
     bgd_log "Reloading nginx on $ACTIVE_ENV" "info"
-    docker cp nginx.conf "${APP_NAME}-${ACTIVE_ENV}-nginx:/etc/nginx/nginx.conf"
-    docker exec "${APP_NAME}-${ACTIVE_ENV}-nginx" nginx -s reload
+    docker cp nginx.conf "$active_nginx:/etc/nginx/nginx.conf"
+    docker exec "$active_nginx" nginx -s reload
 
     # Allow connections to drain from old configuration
     bgd_log "Allowing connections to drain (5s)..." "info"
     sleep 5
   fi
   
-  if docker ps | grep -q "${APP_NAME}-${TARGET_ENV}-nginx"; then
+  local target_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${TARGET_ENV}-nginx" | head -n1)
+  if [ -n "$target_nginx" ]; then
     # Also ensure target environment nginx has the config
     bgd_log "Updating nginx on $TARGET_ENV" "info"
-    docker cp nginx.conf "${APP_NAME}-${TARGET_ENV}-nginx:/etc/nginx/nginx.conf"
-    docker exec "${APP_NAME}-${TARGET_ENV}-nginx" nginx -s reload
+    docker cp nginx.conf "$target_nginx:/etc/nginx/nginx.conf"
+    docker exec "$target_nginx" nginx -s reload
   fi
 
   # Stop the previous environment unless --keep-old is specified
   if [ "${KEEP_OLD:-false}" != "true" ]; then
     bgd_log "Stopping inactive $ACTIVE_ENV environment" "info"
     
-    # Determine profile if specified
-    PROFILE_ARGS=""
-    if [ -n "${PROFILE:-}" ]; then
-      PROFILE_ARGS="--profile $PROFILE"
-    fi
+    # Get deployment command for the active environment
+    local deploy_cmd=$(bgd_get_deployment_cmd "$ACTIVE_ENV")
     
-    $DOCKER_COMPOSE -p "${APP_NAME}-${ACTIVE_ENV}" $PROFILE_ARGS down || {
+    # Execute command with proper evaluation
+    eval "$deploy_cmd down" || {
       bgd_log "Failed to stop $ACTIVE_ENV environment, continuing anyway" "warning"
     }
   else

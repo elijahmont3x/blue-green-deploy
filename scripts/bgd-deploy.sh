@@ -192,12 +192,6 @@ EOL
     PROFILE="$TARGET_ENV"
     bgd_log "No profile specified, using environment name as profile: $PROFILE" "info"
   fi
-  
-  # Log available profiles if discovery is enabled
-  if [ "${AUTO_DISCOVER_PROFILES:-true}" = "true" ] && type bgd_discover_profiles &>/dev/null; then
-    local available_profiles=$(bgd_discover_profiles "docker-compose.yml" 2>/dev/null || echo "none")
-    bgd_log "Available profiles in docker-compose.yml: $available_profiles" "info"
-  fi
 
   # Process services to deploy
   if [ -z "${SERVICES:-}" ] && [ "${AUTO_DISCOVER_PROFILES:-true}" = "true" ]; then
@@ -206,50 +200,18 @@ EOL
       SERVICES=$(bgd_get_profile_services "docker-compose.yml" "$PROFILE")
       if [ -n "$SERVICES" ]; then
         SERVICES=$(echo "$SERVICES" | tr '\n' ',' | sed 's/,$//')
-        bgd_log "Auto-discovered services for profile '$PROFILE': $SERVICES" "info"
-      else
-        bgd_log "No services found for profile '$PROFILE' - check your docker-compose.yml configuration" "warning"
+        bgd_log "Auto-discovered services for profile $PROFILE: $SERVICES" "info"
       fi
     fi
-  fi
-
-  # Log the selected services clearly
-  if [ -n "${SERVICES:-}" ]; then
-    SERVICE_COUNT=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
-    bgd_log "Selected $SERVICE_COUNT services for deployment: $SERVICES" "info"
-  else
-    bgd_log "No specific services selected, deploying all services in profile '$PROFILE'" "info"
   fi
 
   # Resolve dependencies if enabled
   if [ -n "${SERVICES:-}" ] && [ "${AUTO_RESOLVE_DEPENDENCIES:-true}" = "true" ]; then
     if type bgd_resolve_dependencies &>/dev/null; then
-      bgd_log "Resolving service dependencies..." "info"
       OLD_SERVICES="$SERVICES"
       SERVICES=$(bgd_resolve_dependencies "docker-compose.yml" "$SERVICES")
-      
       if [ "$OLD_SERVICES" != "$SERVICES" ]; then
-        # Calculate and log the newly added dependencies
-        local new_deps=""
-        for svc in $(echo "$SERVICES" | tr ',' ' '); do
-          if ! echo "$OLD_SERVICES" | grep -q "\b$svc\b"; then
-            if [ -n "$new_deps" ]; then
-              new_deps="$new_deps, $svc"
-            else
-              new_deps="$svc"
-            fi
-          fi
-        done
-        
-        if [ -n "$new_deps" ]; then
-          bgd_log "Added dependencies: $new_deps" "info"
-        fi
-        
-        # Log full service list after dependency resolution
-        SERVICE_COUNT=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
-        bgd_log "Final service list ($SERVICE_COUNT services): $SERVICES" "info"
-      else
-        bgd_log "No additional dependencies needed for selected services" "info"
+        bgd_log "Resolved service dependencies: $SERVICES" "info"
       fi
     fi
   fi
@@ -293,21 +255,22 @@ EOL
     local migrations_cmd="${MIGRATIONS_CMD:-npm run migrate}"
     
     # Find the appropriate container to run migrations on
+    local migration_service="${MIGRATION_SERVICE:-}"
     local migration_container=""
     
-    # Try app container first, then others
-    potential_containers=("${APP_NAME}-${TARGET_ENV}-app" "${APP_NAME}-${TARGET_ENV}-api" "${APP_NAME}-${TARGET_ENV}-backend")
-    for container in "${potential_containers[@]}"; do
-      if docker ps | grep -q "$container"; then
-        migration_container="$container"
-        break
-      fi
-    done
+    if [ -n "$migration_service" ]; then
+      # Use specified service if provided
+      migration_container=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${TARGET_ENV}-${migration_service}" | head -n1)
+    else
+      # Find a suitable container automatically
+      migration_container=$(bgd_find_suitable_container "$TARGET_ENV" "app,api,backend,web,db-migration" "sh")
+    fi
     
     if [ -z "$migration_container" ]; then
       bgd_log "No suitable container found for migrations" "warning"
     else
       # Execute migrations within the container
+      bgd_log "Running migrations on container: $migration_container" "info"
       docker exec -t "$migration_container" sh -c "$migrations_cmd" || 
         bgd_handle_error "database_error" "Database migrations failed"
       
@@ -355,7 +318,12 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
+    local nginx_container=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${CURRENT_ENV}-nginx" | head -n1)
+    if [ -n "$nginx_container" ]; then
+      docker restart "$nginx_container" || bgd_log "Failed to restart nginx container: $nginx_container" "warning"
+    else
+      bgd_log "Nginx container not found for $CURRENT_ENV environment" "warning"
+    fi
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
@@ -367,7 +335,12 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
+    nginx_container=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${CURRENT_ENV}-nginx" | head -n1)
+    if [ -n "$nginx_container" ]; then
+      docker restart "$nginx_container" || bgd_log "Failed to restart nginx container: $nginx_container" "warning"
+    else
+      bgd_log "Nginx container not found for $CURRENT_ENV environment" "warning"
+    fi
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     sleep 10
     
@@ -386,7 +359,12 @@ EOL
     bgd_create_dual_env_nginx_conf "$BLUE_WEIGHT_VALUE" "$GREEN_WEIGHT_VALUE"
     
     # Restart nginx to apply configuration
-    docker restart "${APP_NAME}-${CURRENT_ENV}-nginx" || bgd_log "Failed to restart nginx" "warning"
+    nginx_container=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${CURRENT_ENV}-nginx" | head -n1)
+    if [ -n "$nginx_container" ]; then
+      docker restart "$nginx_container" || bgd_log "Failed to restart nginx container: $nginx_container" "warning"
+    else
+      bgd_log "Nginx container not found for $CURRENT_ENV environment" "warning"
+    fi
     bgd_log "Traffic shifted: blue=$BLUE_WEIGHT_VALUE, green=$GREEN_WEIGHT_VALUE" "info"
     
     bgd_log "Traffic gradually shifted to new $TARGET_ENV environment" "success"
@@ -402,43 +380,6 @@ EOL
   fi
 
   bgd_log_deployment_event "$VERSION" "deployment_completed" "success"
-  
-  # Print deployment summary
-  bgd_log "===== DEPLOYMENT SUMMARY =====" "info"
-  bgd_log "Version: $VERSION" "info"
-  bgd_log "Target Environment: $TARGET_ENV" "info"
-  bgd_log "Profile: $PROFILE" "info"
-  
-  # Count deployed services
-  local deployed_services_count=0
-  if [ -n "${SERVICES:-}" ]; then
-    deployed_services_count=$(echo "$SERVICES" | tr ',' '\n' | wc -l)
-    bgd_log "Deployed Services: $deployed_services_count ($SERVICES)" "info"
-  else
-    # Try to count from running containers
-    deployed_services_count=$(docker ps --filter "name=${APP_NAME}-${TARGET_ENV}" | wc -l)
-    bgd_log "Deployed Services: $deployed_services_count (all profile services)" "info"
-  fi
-  
-  # Check persistence status
-  if [ "${INCLUDE_PERSISTENCE:-true}" = "true" ]; then
-    local db_status="Not running"
-    if docker ps | grep -q "${APP_NAME}-db"; then
-      db_status="Running"
-    fi
-    bgd_log "Persistence Services: Included (Database: $db_status)" "info"
-  else
-    bgd_log "Persistence Services: Not included" "info"
-  fi
-  
-  # Traffic status
-  if [ "${NO_SHIFT:-false}" != "true" ]; then
-    bgd_log "Traffic: Gradually shifted to $TARGET_ENV" "info"
-  else
-    bgd_log "Traffic: No automatic shift (manual cutover required)" "info"
-  fi
-  
-  bgd_log "================================" "info"
   bgd_log "Deployment of version $VERSION to $TARGET_ENV environment completed successfully" "success"
   
   return 0

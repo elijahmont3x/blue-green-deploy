@@ -24,8 +24,28 @@ bgd_generate_dual_upstreams() {
   
   # Special case for default upstream
   upstreams+="upstream default_upstream {\n"
-  upstreams+="    server ${app_name}-blue-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000} weight=${blue_weight};\n"
-  upstreams+="    server ${app_name}-green-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000} weight=${green_weight};\n"
+  
+  # Use the DEFAULT_SERVICE if specified, otherwise use flexible container naming pattern
+  local default_service="${DEFAULT_SERVICE:-app}"
+  local default_port="${DEFAULT_PORT:-3000}"
+  
+  # Check if containers exist to determine the exact naming pattern
+  local blue_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-blue-${default_service}" | head -n1 || echo "")
+  local green_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-green-${default_service}" | head -n1 || echo "")
+  
+  # Build upstream based on actual container names or fall back to default pattern
+  if [ -n "$blue_container" ]; then
+    upstreams+="    server ${blue_container}:${default_port} weight=${blue_weight};\n"
+  else
+    upstreams+="    server ${app_name}-blue-${default_service}:${default_port} weight=${blue_weight};\n"
+  fi
+  
+  if [ -n "$green_container" ]; then
+    upstreams+="    server ${green_container}:${default_port} weight=${green_weight};\n"
+  else
+    upstreams+="    server ${app_name}-green-${default_service}:${default_port} weight=${green_weight};\n"
+  fi
+  
   upstreams+="}\n\n"
   
   # Process each service
@@ -65,7 +85,21 @@ bgd_generate_single_upstreams() {
   
   # Special case for default upstream
   upstreams+="upstream ${env_name}_default {\n"
-  upstreams+="    server ${app_name}-${env_name}-${DEFAULT_SERVICE:-app}:${DEFAULT_PORT:-3000};\n"
+  
+  # Use the DEFAULT_SERVICE if specified, otherwise use flexible container naming
+  local default_service="${DEFAULT_SERVICE:-app}"
+  local default_port="${DEFAULT_PORT:-3000}"
+  
+  # Check if container exists to determine the exact naming pattern
+  local env_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-${env_name}-${default_service}" | head -n1 || echo "")
+  
+  # Build upstream based on actual container name or fall back to default pattern
+  if [ -n "$env_container" ]; then
+    upstreams+="    server ${env_container}:${default_port};\n"
+  else
+    upstreams+="    server ${app_name}-${env_name}-${default_service}:${default_port};\n"
+  fi
+  
   upstreams+="}\n\n"
   
   # Process each service

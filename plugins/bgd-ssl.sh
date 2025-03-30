@@ -49,18 +49,36 @@ bgd_check_certificates() {
 
 # Install required dependencies
 bgd_install_ssl_dependencies() {
+  # Skip dependency installation if disabled
+  if [ "${SSL_AUTO_INSTALL_DEPS:-true}" != "true" ]; then
+    bgd_log "Skipping dependency installation" "info"
+    return 0
+  fi
+
   # Ensure Certbot is installed
   if ! command -v certbot &> /dev/null; then
     bgd_log "Certbot not found. Installing..." "info"
     
     # Check package manager and install certbot
     if command -v apt-get &> /dev/null; then
-      sudo apt-get update
-      sudo apt-get install -y certbot
+      sudo apt-get update || {
+        bgd_log "Failed to update package manager" "error"
+        return 1
+      }
+      sudo apt-get install -y certbot || {
+        bgd_log "Failed to install certbot via apt-get" "error"
+        return 1
+      }
     elif command -v yum &> /dev/null; then
-      sudo yum install -y certbot
+      sudo yum install -y certbot || {
+        bgd_log "Failed to install certbot via yum" "error"
+        return 1
+      }
     elif command -v dnf &> /dev/null; then
-      sudo dnf install -y certbot
+      sudo dnf install -y certbot || {
+        bgd_log "Failed to install certbot via dnf" "error"
+        return 1
+      }
     else
       bgd_log "Unable to install certbot: No supported package manager found" "error"
       return 1
@@ -97,12 +115,10 @@ bgd_obtain_ssl_certificates() {
   fi
   
   # Install dependencies
-  if [ "${SSL_AUTO_INSTALL_DEPS:-true}" = "true" ]; then
-    bgd_install_ssl_dependencies || {
-      bgd_log "Failed to install dependencies" "error"
-      return 1
-    }
-  fi
+  bgd_install_ssl_dependencies || {
+    bgd_log "Failed to install dependencies" "error"
+    return 1
+  }
   
   # Create certificates directory with secure permissions
   bgd_ensure_directory "$cert_path"
@@ -270,6 +286,7 @@ bgd_hook_pre_deploy() {
       bgd_obtain_ssl_certificates "$DOMAIN_NAME" || {
         bgd_log "Failed to obtain SSL certificates" "warning"
         bgd_log "Continuing deployment without SSL" "warning"
+        return 1
       }
     fi
   fi

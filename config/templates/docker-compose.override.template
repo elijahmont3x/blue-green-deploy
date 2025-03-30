@@ -2,7 +2,11 @@
 version: '3.8'
 
 services:
-  # Environment-specific service overrides
+  # NOTE: This is a template file. You should customize this for your specific services.
+  # The example services below can be modified or removed as needed.
+  
+  # Example for your main application service
+  # Rename or replace this with your actual service name
   app:
     # Ensure this service uses the environment profile
     profiles: ["{{ENV_NAME}}"]
@@ -10,6 +14,8 @@ services:
       - ENV_NAME={{ENV_NAME}}
       # Add any environment-specific variables here
   
+  # Example for API service
+  # Remove or modify if not applicable
   api:
     # Ensure this service uses the environment profile
     profiles: ["{{ENV_NAME}}"]

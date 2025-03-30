@@ -125,17 +125,18 @@ bgd_cleanup_audit_logs() {
   
   if [ -f "$log_file" ]; then
     # Create a temporary file with only recent logs
-    local tmp_file=$(mktemp)
-    local cutoff_date=$(date -d "$retention_days days ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -v-${retention_days}d +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
-    
-    if [ -n "$cutoff_date" ] && command -v jq &> /dev/null; then
-      jq -c "select(.timestamp >= \"$cutoff_date\")" "$log_file" > "$tmp_file"
-      mv "$tmp_file" "$log_file"
-      bgd_log "Audit logs cleaned up" "success"
-    else
-      bgd_log "Unable to clean up audit logs (jq not available or date command failed)" "warning"
-      rm -f "$tmp_file"
-    fi
+    local temp_file=$(mktemp)
+    cat "$log_file" | awk -v cutoff="$(date -d "$retention_days days ago" +%s)" '{
+      if (match($0, /\"timestamp\":\"([^\"]+)\"/)) {
+        ts = substr($0, RSTART+12, RLENGTH-13);
+        cmd = "date -d \"" ts "\" +%s";
+        cmd | getline timestamp;
+        close(cmd);
+        if (timestamp >= cutoff) {
+          print $0;
+        }
+      }
+    }' > "$temp_file" && mv "$temp_file" "$log_file"
   fi
   
   return 0

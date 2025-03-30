@@ -99,37 +99,19 @@ bgd_rollback() {
 
   # Check if rollback environment is up; if not, start it
   if ! docker ps | grep -q "${APP_NAME}-${ROLLBACK_ENV}"; then
-    # Determine profiles
-    PROFILE_ARGS=""
-    if [ -n "${PROFILE:-}" ]; then
-      PROFILE_ARGS="--profile $PROFILE"
-    else
-      # Use rollback environment as profile if not specified
-      PROFILE_ARGS="--profile $ROLLBACK_ENV"
-    fi
-    
-    # Add persistence profile if needed
-    if [ "${INCLUDE_PERSISTENCE:-true}" = "true" ]; then
-      PROFILE_ARGS="$PROFILE_ARGS --profile persistence"
-    fi
-    
-    # Prepare service args if specified
-    SERVICE_ARGS=""
-    if [ -n "${SERVICES:-}" ]; then
-      # Convert comma-separated list to space-separated for Docker Compose
-      SERVICE_ARGS=$(echo "$SERVICES" | tr ',' ' ')
-    fi
+    # Get deployment command for the rollback environment
+    local deploy_cmd=$(bgd_get_deployment_cmd "$ROLLBACK_ENV" ".env.${ROLLBACK_ENV}" "$PROFILE" "$additional_profiles")
     
     bgd_log "Starting rollback environment ($ROLLBACK_ENV)" "info"
     
-    # Start the environment with profiles
-    if [ -n "${SERVICE_ARGS:-}" ]; then
-      $DOCKER_COMPOSE -p "${APP_NAME}-${ROLLBACK_ENV}" --env-file ".env.${ROLLBACK_ENV}" \
-        -f docker-compose.yml -f "docker-compose.${ROLLBACK_ENV}.yml" $PROFILE_ARGS up -d $SERVICE_ARGS || 
+    # Start the environment with profiles or services
+    if [ -n "${SERVICES:-}" ]; then
+      # Convert comma-separated to space-separated for Docker Compose
+      local service_args=$(echo "$SERVICES" | tr ',' ' ')
+      eval "$deploy_cmd up -d $service_args" || 
         bgd_handle_error "environment_start_failed" "Failed to start rollback environment"
     else
-      $DOCKER_COMPOSE -p "${APP_NAME}-${ROLLBACK_ENV}" --env-file ".env.${ROLLBACK_ENV}" \
-        -f docker-compose.yml -f "docker-compose.${ROLLBACK_ENV}.yml" $PROFILE_ARGS up -d || 
+      eval "$deploy_cmd up -d" || 
         bgd_handle_error "environment_start_failed" "Failed to start rollback environment"
     fi
   fi
@@ -154,18 +136,20 @@ bgd_rollback() {
   bgd_create_single_env_nginx_conf "$ROLLBACK_ENV"
 
   # Apply Nginx configuration
-  if docker ps | grep -q "${APP_NAME}-${ACTIVE_ENV}-nginx"; then
+  local active_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${ACTIVE_ENV}-nginx" | head -n1)
+  if [ -n "$active_nginx" ]; then
     # Reload configuration on active nginx
     bgd_log "Reloading nginx on $ACTIVE_ENV" "info"
-    docker cp nginx.conf "${APP_NAME}-${ACTIVE_ENV}-nginx:/etc/nginx/nginx.conf"
-    docker exec "${APP_NAME}-${ACTIVE_ENV}-nginx" nginx -s reload
+    docker cp nginx.conf "$active_nginx:/etc/nginx/nginx.conf"
+    docker exec "$active_nginx" nginx -s reload
   fi
   
-  if docker ps | grep -q "${APP_NAME}-${ROLLBACK_ENV}-nginx"; then
+  local rollback_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${ROLLBACK_ENV}-nginx" | head -n1)
+  if [ -n "$rollback_nginx" ]; then
     # Also ensure rollback environment nginx has the config
     bgd_log "Updating nginx on $ROLLBACK_ENV" "info"
-    docker cp nginx.conf "${APP_NAME}-${ROLLBACK_ENV}-nginx:/etc/nginx/nginx.conf"
-    docker exec "${APP_NAME}-${ROLLBACK_ENV}-nginx" nginx -s reload
+    docker cp nginx.conf "$rollback_nginx:/etc/nginx/nginx.conf"
+    docker exec "$rollback_nginx" nginx -s reload
   fi
 
   # Send notification if enabled
