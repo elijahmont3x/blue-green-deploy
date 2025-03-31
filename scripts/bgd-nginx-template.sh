@@ -1,365 +1,464 @@
 #!/bin/bash
 #
-# bgd-nginx-template.sh - Dynamic Nginx configuration generator for Blue/Green Deployment
+# bgd-nginx-template.sh - Template processing for Nginx configurations
 #
-# This script generates Nginx configuration based on path and subdomain mappings
-# It supports both blue/green traffic splitting and single environment deployments
+# This script handles template processing for the BGD system's Nginx configurations
 
 set -euo pipefail
 
-# ============================================================
-# NGINX TEMPLATE PROCESSING
-# ============================================================
+# Get script directory and load core module if not already loaded
+if [ -z "${BGD_SCRIPT_DIR:-}" ]; then
+  BGD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "$BGD_SCRIPT_DIR/bgd-core.sh"
+fi
 
-# Generate upstream blocks for dual-env configuration
-bgd_generate_dual_upstreams() {
-  local app_name="$1"
-  local services="$2"
-  local blue_weight="$3"
-  local green_weight="$4"
+# Default template paths
+BGD_NGINX_TEMPLATE_SINGLE="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
+BGD_NGINX_TEMPLATE_DUAL="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
+
+# Check if running directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  echo "This script should be sourced, not executed directly"
+  exit 1
+fi
+
+# Process a template file with environment variables
+bgd_process_template() {
+  local template_file="$1"
+  local output_file="$2"
   
-  bgd_log "Generating upstream blocks for blue/green traffic splitting" "info"
-  
-  local upstreams=""
-  
-  # Special case for default upstream
-  upstreams+="upstream default_upstream {\n"
-  
-  # Use the DEFAULT_SERVICE if specified, otherwise use flexible container naming pattern
-  local default_service="${DEFAULT_SERVICE:-app}"
-  local default_port="${DEFAULT_PORT:-3000}"
-  
-  # Check if containers exist to determine the exact naming pattern
-  local blue_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-blue-${default_service}" | head -n1 || echo "")
-  local green_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-green-${default_service}" | head -n1 || echo "")
-  
-  # Build upstream based on actual container names or fall back to default pattern
-  if [ -n "$blue_container" ]; then
-    upstreams+="    server ${blue_container}:${default_port} weight=${blue_weight};\n"
-  else
-    upstreams+="    server ${app_name}-blue-${default_service}:${default_port} weight=${blue_weight};\n"
+  if [ ! -f "$template_file" ]; then
+    bgd_log "Template file not found: $template_file" "error"
+    return 1
   fi
   
-  if [ -n "$green_container" ]; then
-    upstreams+="    server ${green_container}:${default_port} weight=${green_weight};\n"
-  else
-    upstreams+="    server ${app_name}-green-${default_service}:${default_port} weight=${green_weight};\n"
-  fi
+  bgd_log "Processing template: $template_file -> $output_file" "debug"
   
-  upstreams+="}\n\n"
+  # Create a temporary file for processing
+  local temp_file=$(mktemp)
   
-  # Process each service
-  IFS=',' read -ra SERVICE_MAPPINGS <<< "$services"
-  for mapping in "${SERVICE_MAPPINGS[@]}"; do
-    # Skip empty mappings
-    if [ -z "$mapping" ]; then
-      continue
-    fi
+  # Process template with environment variables
+  eval "cat <<EOF
+$(cat "$template_file")
+EOF
+" > "$temp_file" 2>/dev/null || {
+    bgd_log "Failed to process template with environment variables" "error"
+    rm -f "$temp_file"
+    return 1
+  }
+  
+  # Process conditional blocks (e.g., {{#VARIABLE}}content{{/VARIABLE}})
+  bgd_process_conditional_blocks "$temp_file" "$output_file" || {
+    bgd_log "Failed to process conditional blocks" "error" 
+    rm -f "$temp_file"
+    return 1
+  }
+  
+  # Clean up
+  rm -f "$temp_file"
+  
+  return 0
+}
+
+# Process conditional blocks in templates
+bgd_process_conditional_blocks() {
+  local input_file="$1"
+  local output_file="$2"
+  
+  # Create a temporary file for processing
+  local temp_file=$(mktemp)
+  
+  # Read the input file
+  local content=$(cat "$input_file")
+  
+  # Process conditionals {{#VAR}}content{{/VAR}}
+  while [[ "$content" =~ \{\{#([A-Za-z0-9_]+)\}\}(.*?)\{\{/\1\}\} ]]; do
+    local var_name="${BASH_REMATCH[1]}"
+    local var_content="${BASH_REMATCH[2]}"
+    local full_match="${BASH_REMATCH[0]}"
     
-    # Parse the mapping (name:service:port)
-    IFS=':' read -ra PARTS <<< "$mapping"
-    if [ ${#PARTS[@]} -ge 3 ]; then
-      local name="${PARTS[0]}"
-      local service="${PARTS[1]}"
-      local port="${PARTS[2]}"
-      
-      upstreams+="upstream ${name}_upstream {\n"
-      upstreams+="    server ${app_name}-blue-${service}:${port} weight=${blue_weight};\n"
-      upstreams+="    server ${app_name}-green-${service}:${port} weight=${green_weight};\n"
-      upstreams+="}\n\n"
+    # Check if the variable is defined and non-empty
+    if [ -n "${!var_name+x}" ] && [ -n "${!var_name}" ] && [ "${!var_name}" != "false" ] && [ "${!var_name}" != "0" ]; then
+      # Variable is true, keep the content
+      content=${content//$full_match/$var_content}
+    else
+      # Variable is false, remove the content
+      content=${content//$full_match/}
     fi
   done
   
-  echo -e "$upstreams"
+  # Process inverse conditionals {{^VAR}}content{{/VAR}}
+  while [[ "$content" =~ \{\{\^([A-Za-z0-9_]+)\}\}(.*?)\{\{/\1\}\} ]]; do
+    local var_name="${BASH_REMATCH[1]}"
+    local var_content="${BASH_REMATCH[2]}"
+    local full_match="${BASH_REMATCH[0]}"
+    
+    # Check if the variable is NOT defined or empty
+    if [ -z "${!var_name+x}" ] || [ -z "${!var_name}" ] || [ "${!var_name}" = "false" ] || [ "${!var_name}" = "0" ]; then
+      # Variable is false, keep the content
+      content=${content//$full_match/$var_content}
+    else
+      # Variable is true, remove the content
+      content=${content//$full_match/}
+    fi
+  done
+  
+  # Process include statements {{#include:filename}}
+  while [[ "$content" =~ \{\{#include:([A-Za-z0-9_-]+)\}\} ]]; do
+    local partial_name="${BASH_REMATCH[1]}"
+    local full_match="${BASH_REMATCH[0]}"
+    
+    # Include the partial template
+    local partial_content=""
+    if partial_content=$(bgd_include_partial "$partial_name"); then
+      content=${content//$full_match/$partial_content}
+    else
+      # If include fails, just remove the include statement
+      content=${content//$full_match/}
+      bgd_log "Failed to include partial: $partial_name" "warning"
+    fi
+  done
+  
+  # Replace simple variables {{VAR}} that remain
+  while [[ "$content" =~ \{\{([A-Za-z0-9_]+)\}\} ]]; do
+    local var_name="${BASH_REMATCH[1]}"
+    local var_value="${!var_name:-}"
+    
+    content=${content//$BASH_REMATCH[0]/$var_value}
+  done
+  
+  # Write to output file
+  echo "$content" > "$output_file" || {
+    bgd_log "Failed to write to output file: $output_file" "error"
+    rm -f "$temp_file"
+    return 1
+  }
+  
+  # Clean up
+  rm -f "$temp_file"
+  
+  return 0
 }
 
-# Generate upstream blocks for single-env configuration
-bgd_generate_single_upstreams() {
+# Generate Nginx configuration for single environment
+bgd_generate_single_env_nginx_conf() {
   local app_name="$1"
   local env_name="$2"
-  local services="$3"
   
-  bgd_log "Generating upstream blocks for single environment ($env_name)" "info"
+  # Set environment variables for template
+  export APP_NAME="$app_name"
+  export ENV_NAME="$env_name"
+  export TIMESTAMP="$(date)"
   
-  local upstreams=""
-  
-  # Special case for default upstream
-  upstreams+="upstream ${env_name}_default {\n"
-  
-  # Use the DEFAULT_SERVICE if specified, otherwise use flexible container naming
-  local default_service="${DEFAULT_SERVICE:-app}"
-  local default_port="${DEFAULT_PORT:-3000}"
-  
-  # Check if container exists to determine the exact naming pattern
-  local env_container=$(docker ps --format "{{.Names}}" | grep "${app_name}-${env_name}-${default_service}" | head -n1 || echo "")
-  
-  # Build upstream based on actual container name or fall back to default pattern
-  if [ -n "$env_container" ]; then
-    upstreams+="    server ${env_container}:${default_port};\n"
+  # Determine port based on environment
+  if [ "$env_name" = "blue" ]; then
+    export ENV_PORT="${BLUE_PORT:-8081}"
   else
-    upstreams+="    server ${app_name}-${env_name}-${default_service}:${default_port};\n"
+    export ENV_PORT="${GREEN_PORT:-8082}"
+  fi
+
+  # Check if health endpoint is defined
+  if [ -n "${HEALTH_ENDPOINT:-}" ]; then
+    export HEALTH_PATH="${HEALTH_ENDPOINT}"
   fi
   
-  upstreams+="}\n\n"
-  
-  # Process each service
-  IFS=',' read -ra SERVICE_MAPPINGS <<< "$services"
-  for mapping in "${SERVICE_MAPPINGS[@]}"; do
-    # Skip empty mappings
-    if [ -z "$mapping" ]; then
-      continue
+  # Check if domain name is defined
+  if [ -n "${DOMAIN_NAME:-}" ]; then
+    export SERVER_NAME="${DOMAIN_NAME}"
+    if [ -n "${DOMAIN_ALIASES:-}" ]; then
+      export SERVER_NAME="${DOMAIN_NAME} ${DOMAIN_ALIASES}"
     fi
-    
-    # Parse the mapping (name:service:port)
-    IFS=':' read -ra PARTS <<< "$mapping"
-    if [ ${#PARTS[@]} -ge 3 ]; then
-      local name="${PARTS[0]}"
-      local service="${PARTS[1]}"
-      local port="${PARTS[2]}"
-      
-      upstreams+="upstream ${env_name}_${name} {\n"
-      upstreams+="    server ${app_name}-${env_name}-${service}:${port};\n"
-      upstreams+="}\n\n"
-    fi
-  done
+  fi
   
-  echo -e "$upstreams"
+  # Check if template exists
+  local template="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
+  if [ ! -f "$template" ]; then
+    bgd_log "Nginx single environment template not found: $template" "error"
+    return 1
+  fi
+  
+  # Process the template
+  local temp_file=$(mktemp)
+  if ! bgd_process_template "$template" "$temp_file"; then
+    bgd_log "Failed to process Nginx template" "error"
+    rm -f "$temp_file"
+    return 1
+  fi
+  
+  # Output the processed template
+  cat "$temp_file"
+  rm -f "$temp_file"
+  
+  return 0
 }
 
-# Generate location blocks for path-based routing
-bgd_generate_path_locations() {
-  local paths="$1"
-  local is_dual_env="${2:-true}"
-  local env_name="${3:-}"
-  
-  bgd_log "Generating location blocks for path-based routing" "info"
-  
-  local locations=""
-  
-  # Process each path mapping
-  IFS=',' read -ra PATH_MAPPINGS <<< "$paths"
-  for mapping in "${PATH_MAPPINGS[@]}"; do
-    # Skip empty mappings
-    if [ -z "$mapping" ]; then
-      continue
-    fi
-    
-    # Parse the mapping (path:service:port)
-    IFS=':' read -ra PARTS <<< "$mapping"
-    if [ ${#PARTS[@]} -ge 3 ]; then
-      local path="${PARTS[0]}"
-      local name="${PARTS[0]#/}"  # Remove leading slash for the name
-      
-      # Ensure path starts with /
-      if [[ "$path" != /* ]]; then
-        path="/$path"
-      fi
-      
-      locations+="    location ${path} {\n"
-      
-      # Different upstream reference depending on environment mode
-      if [ "$is_dual_env" = "true" ]; then
-        locations+="        proxy_pass http://${name}_upstream;\n"
-      else
-        locations+="        proxy_pass http://${env_name}_${name};\n"
-      fi
-      
-      # Common proxy settings
-      locations+="        proxy_set_header Host \$host;\n"
-      locations+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-      locations+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-      locations+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-      locations+="    }\n\n"
-    fi
-  done
-  
-  echo -e "$locations"
-}
-
-# Generate server blocks for subdomain-based routing
-bgd_generate_subdomain_servers() {
-  local app_name="$1"
-  local subdomains="$2"
-  local is_dual_env="${3:-true}"
-  local env_name="${4:-}"
-  local blue_weight="${5:-10}"
-  local green_weight="${6:-0}"
-  
-  bgd_log "Generating server blocks for subdomain-based routing" "info"
-  
-  local servers=""
-  
-  # Process each subdomain mapping
-  IFS=',' read -ra SUBDOMAIN_MAPPINGS <<< "$subdomains"
-  for mapping in "${SUBDOMAIN_MAPPINGS[@]}"; do
-    # Skip empty mappings
-    if [ -z "$mapping" ]; then
-      continue
-    fi
-    
-    # Parse the mapping (subdomain:service:port)
-    IFS=':' read -ra PARTS <<< "$mapping"
-    if [ ${#PARTS[@]} -ge 3 ]; then
-      local subdomain="${PARTS[0]}"
-      local service="${PARTS[1]}"
-      local port="${PARTS[2]}"
-      
-      # Generate server block
-      servers+="server {\n"
-      servers+="    listen NGINX_PORT;\n"
-      servers+="    server_name ${subdomain}.DOMAIN_NAME;\n"
-      servers+="    return 301 https://\$host\$request_uri;\n"
-      servers+="}\n\n"
-      
-      servers+="server {\n"
-      servers+="    listen NGINX_SSL_PORT ssl http2;\n"
-      servers+="    server_name ${subdomain}.DOMAIN_NAME;\n"
-      servers+="    \n"
-      servers+="    # SSL Configuration\n"
-      servers+="    ssl_certificate /etc/nginx/certs/fullchain.pem;\n"
-      servers+="    ssl_certificate_key /etc/nginx/certs/privkey.pem;\n"
-      servers+="    ssl_protocols TLSv1.2 TLSv1.3;\n"
-      servers+="    ssl_prefer_server_ciphers on;\n"
-      servers+="    ssl_ciphers EECDH+AESGCM:EDH+AESGCM;\n"
-      servers+="    ssl_session_cache shared:SSL:10m;\n"
-      servers+="    ssl_session_timeout 1d;\n"
-      servers+="    ssl_stapling on;\n"
-      servers+="    ssl_stapling_verify on;\n"
-      servers+="    \n"
-      servers+="    # Security headers\n"
-      servers+="    add_header Strict-Transport-Security \"max-age=15768000; includeSubDomains\" always;\n"
-      servers+="    add_header X-Content-Type-Options nosniff;\n"
-      servers+="    add_header X-Frame-Options SAMEORIGIN;\n"
-      servers+="    add_header X-XSS-Protection \"1; mode=block\";\n"
-      servers+="    \n"
-      servers+="    location / {\n"
-      
-      # Different upstream reference depending on environment mode
-      if [ "$is_dual_env" = "true" ]; then
-        # Create a subdomain-specific upstream
-        servers+="        proxy_pass http://${subdomain}_upstream;\n"
-      else
-        servers+="        proxy_pass http://${app_name}-${env_name}-${service}:${port};\n"
-      fi
-      
-      # Common proxy settings
-      servers+="        proxy_set_header Host \$host;\n"
-      servers+="        proxy_set_header X-Real-IP \$remote_addr;\n"
-      servers+="        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;\n"
-      servers+="        proxy_set_header X-Forwarded-Proto \$scheme;\n"
-      servers+="    }\n"
-      servers+="}\n\n"
-    fi
-  done
-  
-  echo -e "$servers"
-}
-
-# Generate the complete Nginx configuration for dual environments
+# Generate Nginx configuration for dual environment (weighted routing)
 bgd_generate_dual_env_nginx_conf() {
   local app_name="$1"
   local blue_weight="$2"
   local green_weight="$3"
-  local paths="${4:-}"
-  local subdomains="${5:-}"
   
-  bgd_log "Generating dual-environment Nginx configuration" "info"
+  # Set environment variables for template
+  export APP_NAME="$app_name"
+  export BLUE_WEIGHT="$blue_weight"
+  export GREEN_WEIGHT="$green_weight"
+  export BLUE_PORT="${BLUE_PORT:-8081}"
+  export GREEN_PORT="${GREEN_PORT:-8082}"
+  export TIMESTAMP="$(date)"
   
-  # Get the template
+  # Check if health endpoint is defined
+  if [ -n "${HEALTH_ENDPOINT:-}" ]; then
+    export HEALTH_PATH="${HEALTH_ENDPOINT}"
+  fi
+  
+  # Check if domain name is defined
+  if [ -n "${DOMAIN_NAME:-}" ]; then
+    export SERVER_NAME="${DOMAIN_NAME}"
+    if [ -n "${DOMAIN_ALIASES:-}" ]; then
+      export SERVER_NAME="${DOMAIN_NAME} ${DOMAIN_ALIASES}"
+    fi
+  fi
+  
+  # Check if template exists
   local template="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
   if [ ! -f "$template" ]; then
-    bgd_handle_error "file_not_found" "Nginx dual-env template not found at $template"
+    bgd_log "Nginx dual environment template not found: $template" "error"
     return 1
   fi
   
-  # Read the template
-  local nginx_conf=$(<"$template")
-  
-  # Generate upstreams
-  local all_services="${paths},${subdomains}"
-  local upstreams=$(bgd_generate_dual_upstreams "$app_name" "$all_services" "$blue_weight" "$green_weight")
-  
-  # Replace DYNAMIC_UPSTREAMS placeholder
-  nginx_conf="${nginx_conf//DYNAMIC_UPSTREAMS/$upstreams}"
-  
-  # Generate path locations if provided
-  if [ -n "$paths" ]; then
-    local path_locations=$(bgd_generate_path_locations "$paths" "true")
-    nginx_conf="${nginx_conf//DYNAMIC_PATH_ROUTES/$path_locations}"
-  else
-    nginx_conf="${nginx_conf//DYNAMIC_PATH_ROUTES/}"
+  # Process the template
+  local temp_file=$(mktemp)
+  if ! bgd_process_template "$template" "$temp_file"; then
+    bgd_log "Failed to process Nginx template" "error"
+    rm -f "$temp_file"
+    return 1
   fi
   
-  # Generate subdomain servers if provided
-  if [ -n "$subdomains" ]; then
-    local subdomain_servers=$(bgd_generate_subdomain_servers "$app_name" "$subdomains" "true" "" "$blue_weight" "$green_weight")
-    nginx_conf="${nginx_conf//DYNAMIC_SUBDOMAIN_SERVERS/$subdomain_servers}"
-  else
-    nginx_conf="${nginx_conf//DYNAMIC_SUBDOMAIN_SERVERS/}"
-  fi
+  # Output the processed template
+  cat "$temp_file"
+  rm -f "$temp_file"
   
-  # Handle domain name and ports
-  nginx_conf="${nginx_conf//DOMAIN_NAME/${DOMAIN_NAME:-localhost}}"
-  nginx_conf="${nginx_conf//DOMAIN_ALIASES/${DOMAIN_ALIASES:-}}"
-  nginx_conf="${nginx_conf//NGINX_PORT/${NGINX_PORT:-80}}"
-  nginx_conf="${nginx_conf//NGINX_SSL_PORT/${NGINX_SSL_PORT:-443}}"
-  
-  # Handle default upstream (already included in upstreams section)
-  nginx_conf="${nginx_conf//DEFAULT_UPSTREAM/default_upstream}"
-  
-  # Return the configuration
-  echo "$nginx_conf"
+  return 0
 }
 
-# Generate the complete Nginx configuration for a single environment
-bgd_generate_single_env_nginx_conf() {
-  local app_name="$1"
-  local env_name="$2"
-  local paths="${3:-}"
-  local subdomains="${4:-}"
+# Include a partial template
+bgd_include_partial() {
+  local partial_name="$1"
+  local partial_file="${BGD_TEMPLATES_DIR}/partials/${partial_name}.template"
   
-  bgd_log "Generating single-environment Nginx configuration for $env_name" "info"
-  
-  # Get the template
-  local template="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
-  if [ ! -f "$template" ]; then
-    bgd_handle_error "file_not_found" "Nginx single-env template not found at $template"
+  if [ ! -f "$partial_file" ]; then
+    bgd_log "Partial template not found: $partial_file" "warning"
     return 1
   fi
   
-  # Read the template
-  local nginx_conf=$(<"$template")
-  
-  # Generate upstreams
-  local all_services="${paths},${subdomains}"
-  local upstreams=$(bgd_generate_single_upstreams "$app_name" "$env_name" "$all_services")
-  
-  # Replace DYNAMIC_UPSTREAMS placeholder
-  nginx_conf="${nginx_conf//DYNAMIC_UPSTREAMS/$upstreams}"
-  
-  # Generate path locations if provided
-  if [ -n "$paths" ]; then
-    local path_locations=$(bgd_generate_path_locations "$paths" "false" "$env_name")
-    nginx_conf="${nginx_conf//DYNAMIC_PATH_ROUTES/$path_locations}"
-  else
-    nginx_conf="${nginx_conf//DYNAMIC_PATH_ROUTES/}"
+  # Process the partial template with current environment
+  local temp_file=$(mktemp)
+  if ! bgd_process_template "$partial_file" "$temp_file"; then
+    bgd_log "Failed to process partial template: $partial_name" "warning"
+    rm -f "$temp_file"
+    return 1
   fi
   
-  # Generate subdomain servers if provided
-  if [ -n "$subdomains" ]; then
-    local subdomain_servers=$(bgd_generate_subdomain_servers "$app_name" "$subdomains" "false" "$env_name")
-    nginx_conf="${nginx_conf//DYNAMIC_SUBDOMAIN_SERVERS/$subdomain_servers}"
-  else
-    nginx_conf="${nginx_conf//DYNAMIC_SUBDOMAIN_SERVERS/}"
-  fi
+  # Output the processed template
+  cat "$temp_file"
+  rm -f "$temp_file"
   
-  # Handle domain name, environment name, and ports
-  nginx_conf="${nginx_conf//DOMAIN_NAME/${DOMAIN_NAME:-localhost}}"
-  nginx_conf="${nginx_conf//DOMAIN_ALIASES/${DOMAIN_ALIASES:-}}"
-  nginx_conf="${nginx_conf//NGINX_PORT/${NGINX_PORT:-80}}"
-  nginx_conf="${nginx_conf//NGINX_SSL_PORT/${NGINX_SSL_PORT:-443}}"
-  nginx_conf="${nginx_conf//ENV_NAME/$env_name}"
-  
-  # Return the configuration
-  echo "$nginx_conf"
+  return 0
 }
+
+# Validate Nginx configuration
+bgd_validate_nginx_conf() {
+  local config_file="$1"
+  
+  if [ ! -f "$config_file" ]; then
+    bgd_log "Configuration file not found: $config_file" "error"
+    return 1
+  fi
+  
+  bgd_log "Validating Nginx configuration: $config_file" "info"
+  
+  # Check if docker is available for validation
+  if command -v docker &> /dev/null; then
+    docker run --rm -v "$(pwd)/$config_file:/etc/nginx/nginx.conf:ro" nginx:stable-alpine nginx -t || {
+      bgd_log "Nginx configuration validation failed" "error"
+      return 1
+    }
+  elif command -v nginx &> /dev/null; then
+    # Use local nginx if available
+    nginx -t -c "$(pwd)/$config_file" || {
+      bgd_log "Nginx configuration validation failed" "error"
+      return 1
+    }
+  else
+    bgd_log "Neither Docker nor nginx available for validation, skipping" "warning"
+    return 0
+  fi
+  
+  bgd_log "Nginx configuration validation passed" "success"
+  return 0
+}
+
+# Install templates from source directory
+bgd_install_templates() {
+  local source_dir="$1"
+  local force="${2:-false}"
+  
+  if [ ! -d "$source_dir" ]; then
+    bgd_log "Template source directory not found: $source_dir" "error"
+    return 1
+  fi
+  
+  bgd_log "Installing templates from $source_dir" "info"
+  
+  # Ensure destination directory exists
+  bgd_ensure_directory "$BGD_TEMPLATES_DIR"
+  bgd_ensure_directory "$BGD_TEMPLATES_DIR/partials"
+  
+  # Copy main templates
+  for template in "$source_dir"/*.template; do
+    if [ -f "$template" ]; then
+      local filename=$(basename "$template")
+      local dest_file="$BGD_TEMPLATES_DIR/$filename"
+      
+      if [ ! -f "$dest_file" ] || [ "$force" = "true" ]; then
+        cp "$template" "$dest_file" || {
+          bgd_log "Failed to copy template: $template" "error"
+          return 1
+        }
+        bgd_log "Installed template: $filename" "info"
+      else
+        bgd_log "Template already exists, skipping: $filename" "debug"
+      fi
+    fi
+  done
+  
+  # Copy partial templates
+  for partial in "$source_dir/partials"/*.template; do
+    if [ -f "$partial" ]; then
+      local filename=$(basename "$partial")
+      local dest_file="$BGD_TEMPLATES_DIR/partials/$filename"
+      
+      if [ ! -f "$dest_file" ] || [ "$force" = "true" ]; then
+        cp "$partial" "$dest_file" || {
+          bgd_log "Failed to copy partial template: $partial" "error"
+          return 1
+        }
+        bgd_log "Installed partial template: $filename" "info"
+      else
+        bgd_log "Partial template already exists, skipping: $filename" "debug"
+      fi
+    fi
+  done
+  
+  # Copy auxiliary configuration files
+  for config in "$source_dir"/*.conf; do
+    if [ -f "$config" ]; then
+      local filename=$(basename "$config")
+      local dest_file="$BGD_TEMPLATES_DIR/$filename"
+      
+      if [ ! -f "$dest_file" ] || [ "$force" = "true" ]; then
+        cp "$config" "$dest_file" || {
+          bgd_log "Failed to copy configuration: $config" "error"
+          return 1
+        }
+        bgd_log "Installed configuration: $filename" "info"
+      else
+        bgd_log "Configuration already exists, skipping: $filename" "debug"
+      fi
+    fi
+  done
+  
+  bgd_log "Templates installed successfully" "success"
+  return 0
+}
+
+# Self-test function to verify template processor
+bgd_test_template_processor() {
+  local test_template=$(mktemp)
+  
+  # Create a test template
+  cat > "$test_template" << EOL
+# Test Template
+App Name: {{APP_NAME}}
+Environment: {{ENV_NAME}}
+{{#SSL_ENABLED}}
+SSL is enabled
+{{/SSL_ENABLED}}
+{{^SSL_ENABLED}}
+SSL is disabled
+{{/SSL_ENABLED}}
+EOL
+  
+  # Set test variables
+  export APP_NAME="TestApp"
+  export ENV_NAME="blue"
+  export SSL_ENABLED="true"
+  
+  # Process the template
+  local result=$(bgd_process_template "$test_template")
+  
+  # Clean up
+  rm -f "$test_template"
+  
+  # Verify result
+  if [[ "$result" == *"App Name: TestApp"* ]] && [[ "$result" == *"Environment: blue"* ]] && [[ "$result" == *"SSL is enabled"* ]]; then
+    bgd_log "Template processor test passed" "success"
+    return 0
+  else
+    bgd_log "Template processor test failed" "error"
+    return 1
+  fi
+}
+
+# Main function for standalone usage
+bgd_nginx_template_main() {
+  local command="${1:-generate}"
+  shift || true
+  
+  case "$command" in
+    generate)
+      local env_type="${1:-single}"
+      local app_name="${2:-myapp}"
+      
+      if [ "$env_type" = "single" ]; then
+        local env_name="${3:-blue}"
+        bgd_generate_single_env_nginx_conf "$app_name" "$env_name"
+      elif [ "$env_type" = "dual" ]; then
+        local blue_weight="${3:-50}"
+        local green_weight="${4:-50}"
+        bgd_generate_dual_env_nginx_conf "$app_name" "$blue_weight" "$green_weight"
+      else
+        bgd_log "Invalid environment type: $env_type. Use 'single' or 'dual'" "error"
+        return 1
+      fi
+      ;;
+      
+    install)
+      local source_dir="${1:-$BGD_SCRIPT_DIR/../templates}"
+      local force="${2:-false}"
+      bgd_install_templates "$source_dir" "$force"
+      ;;
+      
+    validate)
+      local config_file="${1:-nginx.conf}"
+      bgd_validate_nginx_conf "$config_file"
+      ;;
+      
+    test)
+      bgd_test_template_processor
+      ;;
+      
+    *)
+      bgd_log "Unknown command: $command" "error"
+      bgd_log "Valid commands: generate, install, validate, test" "info"
+      return 1
+      ;;
+  esac
+  
+  return $?
+}
+
+# Execute main function if script is being run directly
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  bgd_nginx_template_main "$@"
+fi

@@ -1,713 +1,662 @@
 #!/bin/bash
 #
-# bgd-core.sh - Core functions for Blue/Green Deployment toolkit
+# bgd-core.sh - Core utility functions for Blue/Green Deployment
 #
-# This module defines essential functions used by all BGD toolkit scripts.
-# It includes logging, configuration management, error handling, and utility functions.
+# This script provides common functions used by other BGD scripts
 
-set -euo pipefail
+# Set up base directories
+BGD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BGD_BASE_DIR="$(cd "$(dirname "$BGD_SCRIPT_DIR")" && pwd)"
+BGD_CONFIG_DIR="$BGD_BASE_DIR/config"
+BGD_TEMPLATES_DIR="$BGD_CONFIG_DIR/templates"
+BGD_LOGS_DIR="$BGD_BASE_DIR/logs"
 
-# ============================================================
-# CONFIGURATION MANAGEMENT
-# ============================================================
-
-# Required parameters - empty value means it's a required parameter
-declare -A BGD_REQUIRED_PARAMS=(
-  ["APP_NAME"]=""
-  ["VERSION"]=""
-  ["IMAGE_REPO"]=""
-)
-
-# Parameter validation rules
-declare -A BGD_VALIDATION_RULES=(
-  ["NGINX_PORT"]="validate_port"
-  ["NGINX_SSL_PORT"]="validate_port"
-  ["BLUE_PORT"]="validate_port"
-  ["GREEN_PORT"]="validate_port"
-  ["HEALTH_RETRIES"]="validate_positive_integer"
-  ["HEALTH_DELAY"]="validate_positive_integer"
-  ["TIMEOUT"]="validate_positive_integer"
-)
-
-# Default values - only for non-critical parameters
-declare -A BGD_DEFAULT_VALUES=(
-  ["HEALTH_ENDPOINT"]="/health"
-  ["HEALTH_RETRIES"]="12"
-  ["HEALTH_DELAY"]="5"
-  ["TIMEOUT"]="5"
-  ["MAX_LOG_LINES"]="100"
-  ["NGINX_PORT"]="80"
-  ["NGINX_SSL_PORT"]="443"
-  ["BLUE_PORT"]="8081"
-  ["GREEN_PORT"]="8082"
-  ["PATHS"]=""
-  ["SUBDOMAINS"]=""
-  ["DEFAULT_SERVICE"]="app"
-  ["DEFAULT_PORT"]="3000"
-  ["DOMAIN_ALIASES"]=""
-)
-
-# Plugin registered arguments
-declare -A BGD_PLUGIN_ARGS=()
-
-# ============================================================
-# DIRECTORY AND FILE MANAGEMENT
-# ============================================================
-
-# Directory structure
-BGD_BASE_DIR="$(pwd)"
-BGD_LOGS_DIR="${BGD_BASE_DIR}/logs"
-BGD_CONFIG_DIR="${BGD_BASE_DIR}/config"
-BGD_TEMPLATES_DIR="${BGD_CONFIG_DIR}/templates"
-BGD_CREDENTIALS_DIR="${BGD_BASE_DIR}/credentials"
-BGD_PLUGINS_DIR="${BGD_BASE_DIR}/plugins"
-
-# Log file for current operation
-BGD_LOG_FILE="${BGD_LOGS_DIR}/bgd-$(date '+%Y%m%d-%H%M%S').log"
-
-# Ensure directory exists
-bgd_ensure_directory() {
-  local dir_path="$1"
+# Initialize system
+bgd_init() {
+  # Set base directories
+  BGD_BASE_DIR=${BGD_BASE_DIR:-"$(cd "$(dirname "$BGD_SCRIPT_DIR")" && pwd)"}
+  BGD_CONFIG_DIR=${BGD_CONFIG_DIR:-"$BGD_BASE_DIR/config"}
+  BGD_TEMPLATES_DIR=${BGD_TEMPLATES_DIR:-"$BGD_CONFIG_DIR/templates"}
+  BGD_LOGS_DIR=${BGD_LOGS_DIR:-"$BGD_BASE_DIR/logs"}
+  BGD_PLUGINS_DIR=${BGD_PLUGINS_DIR:-"$BGD_BASE_DIR/plugins"}
+  BGD_CREDENTIALS_DIR=${BGD_CREDENTIALS_DIR:-"$BGD_BASE_DIR/credentials"}
   
-  if [ ! -d "$dir_path" ]; then
-    mkdir -p "$dir_path"
-    bgd_log "Created directory: $dir_path" "info"
+  # Check if system is initialized
+  if [ ! -f "${BGD_CONFIG_DIR}/.initialized" ]; then
+    bgd_log "System not initialized. Performing automatic initialization..." "info"
+    bgd_auto_initialize
   fi
-}
-
-# Create required directories
-bgd_create_directories() {
+  
+  # Create necessary directories
   bgd_ensure_directory "$BGD_LOGS_DIR"
+  
+  # Load plugins automatically
+  bgd_load_plugins
+  
+  return 0
+}
+
+# Perform automatic initialization
+bgd_auto_initialize() {
+  # Create required directories
   bgd_ensure_directory "$BGD_CONFIG_DIR"
+  bgd_ensure_directory "$BGD_TEMPLATES_DIR"
+  bgd_ensure_directory "$BGD_TEMPLATES_DIR/partials"
+  bgd_ensure_directory "$BGD_PLUGINS_DIR"
+  bgd_ensure_directory "$BGD_LOGS_DIR"
   bgd_ensure_directory "$BGD_CREDENTIALS_DIR"
-  chmod 700 "$BGD_CREDENTIALS_DIR"  # Secure credentials directory
+  bgd_ensure_directory "${BGD_BASE_DIR}/apps"
+  
+  # Initialize environment markers
+  echo "blue" > "${BGD_BASE_DIR}/.bgd-active-env"
+  echo "green" > "${BGD_BASE_DIR}/.bgd-inactive-env"
+  
+  # Create version file
+  echo "1.0.0" > "${BGD_CONFIG_DIR}/version"
+  
+  # Create basic configuration file
+  cat > "${BGD_CONFIG_DIR}/bgd.conf" << EOL
+# Blue/Green Deployment Configuration
+# Generated: $(date)
+
+# System Configuration
+BGD_BASE_DIR=${BGD_BASE_DIR}
+BGD_CONFIG_DIR=${BGD_CONFIG_DIR}
+BGD_LOGS_DIR=${BGD_LOGS_DIR}
+BGD_TEMPLATES_DIR=${BGD_TEMPLATES_DIR}
+BGD_PLUGINS_DIR=${BGD_PLUGINS_DIR}
+BGD_CREDENTIALS_DIR=${BGD_CREDENTIALS_DIR}
+
+# Default Application Settings
+DEFAULT_APP_NAME=myapp
+DEFAULT_BLUE_PORT=8081
+DEFAULT_GREEN_PORT=8082
+DEFAULT_HEALTH_ENDPOINT=/health
+DEFAULT_HEALTH_RETRIES=12
+DEFAULT_HEALTH_DELAY=5
+
+# Environment Configuration
+DEFAULT_NODE_ENV=production
+DEFAULT_NGINX_PORT=80
+DEFAULT_NGINX_SSL_PORT=443
+
+# Plugin Configuration
+PLUGINS_ENABLED=true
+EOL
+
+  # Create basic templates
+  if [ ! -d "$BGD_TEMPLATES_DIR" ]; then
+    bgd_ensure_directory "$BGD_TEMPLATES_DIR"
+    
+    # Create nginx configuration templates
+    if [ -f "${BGD_SCRIPT_DIR}/../templates/nginx-single-env.conf.template" ]; then
+      cp -r "${BGD_SCRIPT_DIR}/../templates/"* "$BGD_TEMPLATES_DIR/"
+    else
+      # Create minimal templates for nginx configs
+      cat > "${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template" << 'EOL'
+# Nginx configuration for single environment (${ENV_NAME})
+# Generated: ${TIMESTAMP}
+
+user nginx;
+worker_processes auto;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+    multi_accept on;
 }
 
-# ============================================================
-# NGINX CONFIGURATION MANAGEMENT
-# ============================================================
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+                    
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log;
+    
+    # Optimizations
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    
+    # SSL
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    
+    # Server configuration
+    server {
+        listen 80;
+        server_name ${DOMAIN_NAME:-localhost};
+        
+        location / {
+            proxy_pass http://app:${PORT:-3000};
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+EOL
+    
+      cat > "${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template" << 'EOL'
+# Nginx configuration for dual environment (blue/green)
+# Generated: ${TIMESTAMP}
 
-# Safely create or update nginx.conf file for dual-environment setup
-bgd_create_dual_env_nginx_conf() {
-  local blue_weight="$1"
-  local green_weight="$2"
-  
-  bgd_log "Generating dual-environment Nginx configuration (blue: $blue_weight, green: $green_weight)" "info"
-  
-  # Source the template processor if not already loaded
-  if ! declare -f bgd_generate_dual_env_nginx_conf > /dev/null; then
-    local nginx_template_script="${BGD_SCRIPT_DIR}/bgd-nginx-template.sh"
-    if [ -f "$nginx_template_script" ]; then
-      source "$nginx_template_script"
-    else
-      bgd_handle_error "file_not_found" "Nginx template processor not found at $nginx_template_script"
-      return 1
+user nginx;
+worker_processes auto;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+    multi_accept on;
+}
+
+http {
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+    
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+                    
+    access_log /var/log/nginx/access.log main;
+    error_log /var/log/nginx/error.log;
+    
+    # Optimizations
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    
+    # SSL
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    
+    # Upstream definitions for blue/green environments
+    upstream blue {
+        server app-blue:${BLUE_PORT:-8081};
+    }
+    
+    upstream green {
+        server app-green:${GREEN_PORT:-8082};
+    }
+    
+    # Split traffic configuration
+    split_clients "${remote_addr}${remote_port}${time_local}" $environment {
+        ${BLUE_WEIGHT:-50}%    blue;
+        ${GREEN_WEIGHT:-50}%   green;
+    }
+    
+    # Server configuration
+    server {
+        listen 80;
+        server_name ${DOMAIN_NAME:-localhost};
+        
+        location / {
+            proxy_pass http://$environment;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+}
+EOL
     fi
   fi
   
-  # Generate the configuration
-  local nginx_conf=$(bgd_generate_dual_env_nginx_conf "$APP_NAME" "$blue_weight" "$green_weight" "$PATHS" "$SUBDOMAINS")
-  
-  # Check if nginx.conf is a directory and remove it if so
-  if [ -d "nginx.conf" ]; then
-    bgd_log "Found nginx.conf as a directory, removing it" "warning"
-    rm -rf "nginx.conf"
+  # Create docker-compose template if it doesn't exist
+  if [ ! -f "${BGD_BASE_DIR}/docker-compose.template.yml" ]; then
+    cat > "${BGD_BASE_DIR}/docker-compose.template.yml" << 'EOL'
+version: '3.8'
+
+services:
+  app:
+    image: ${IMAGE}
+    container_name: ${APP_NAME}-${ENV_NAME}-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3000}
+      - VERSION=${VERSION:-latest}
+      - ENV_NAME=${ENV_NAME}
+    labels:
+      com.bgd.app: "${APP_NAME}"
+      com.bgd.env: "${ENV_NAME}"
+      com.bgd.version: "${VERSION:-latest}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}${HEALTH_ENDPOINT:-/health}"]
+      interval: 10s
+      timeout: 5s
+      retries: ${HEALTH_RETRIES:-12}
+      start_period: 15s
+    volumes:
+      - app-data:/app/data
+    networks:
+      - ${ENV_NAME}-network
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: ${APP_NAME}-${ENV_NAME}-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_SSL_PORT:-443}:443"
+    depends_on:
+      - app
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx:/etc/nginx:ro
+      - ./certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ${ENV_NAME}-network
+      - ${MASTER_NETWORK:-bgd-network}
+
+networks:
+  ${ENV_NAME}-network:
+    name: ${APP_NAME}-${ENV_NAME}-network
+  ${MASTER_NETWORK:-bgd-network}:
+    external: ${USE_EXTERNAL_NETWORK:-false}
+
+volumes:
+  app-data:
+    name: ${APP_NAME}-${ENV_NAME}-data
+EOL
   fi
   
-  # Write the configuration to a temporary file first
-  echo "$nginx_conf" > "nginx.conf.tmp"
+  # Create initialization marker
+  touch "${BGD_CONFIG_DIR}/.initialized"
   
-  # Verify temp file was created successfully
-  if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
-    bgd_handle_error "file_not_found" "Failed to create temporary nginx.conf file"
-    return 1
-  fi
-  
-  # Move temp file to actual nginx.conf (atomic operation)
-  mv "nginx.conf.tmp" "nginx.conf"
-  
-  bgd_log "Nginx configuration created successfully" "success"
+  bgd_log "Automatic initialization completed successfully" "success"
   return 0
 }
 
-# Safely create or update nginx.conf file for single-environment setup
-bgd_create_single_env_nginx_conf() {
-  local target_env="$1"
+# Ensure required directories exist
+bgd_ensure_directory() {
+  local dir="$1"
   
-  bgd_log "Generating single-environment Nginx configuration for $target_env" "info"
-  
-  # Source the template processor if not already loaded
-  if ! declare -f bgd_generate_single_env_nginx_conf > /dev/null; then
-    local nginx_template_script="${BGD_SCRIPT_DIR}/bgd-nginx-template.sh"
-    if [ -f "$nginx_template_script" ]; then
-      source "$nginx_template_script"
-    else
-      bgd_handle_error "file_not_found" "Nginx template processor not found at $nginx_template_script"
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir" || {
+      echo "Error: Failed to create directory: $dir" >&2
       return 1
-    fi
+    }
   fi
   
-  # Generate the configuration
-  local nginx_conf=$(bgd_generate_single_env_nginx_conf "$APP_NAME" "$target_env" "$PATHS" "$SUBDOMAINS")
-  
-  # Check if nginx.conf is a directory and remove it if so
-  if [ -d "nginx.conf" ]; then
-    bgd_log "Found nginx.conf as a directory, removing it" "warning"
-    rm -rf "nginx.conf"
-  fi
-  
-  # Write the configuration to a temporary file first
-  echo "$nginx_conf" > "nginx.conf.tmp"
-  
-  # Verify temp file was created successfully
-  if [ ! -f "nginx.conf.tmp" ] || [ ! -s "nginx.conf.tmp" ]; then
-    bgd_handle_error "file_not_found" "Failed to create temporary nginx.conf file"
-    return 1
-  fi
-  
-  # Move temp file to actual nginx.conf (atomic operation)
-  mv "nginx.conf.tmp" "nginx.conf"
-  
-  bgd_log "Nginx configuration created successfully" "success"
   return 0
 }
 
-# ============================================================
-# PROFILE AND DEPLOYMENT MANAGEMENT
-# ============================================================
-
-# Detect if using profiles or project-based approach
-bgd_is_using_profiles() {
-  local compose_file="${1:-docker-compose.yml}"
-  
-  # Check if the file exists
-  if [ ! -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1  # Error - can't determine if using profiles
-  fi
-  
-  # Look for profiles in docker-compose.yml
-  if grep -q "profiles:" "$compose_file" 2>/dev/null; then
-    bgd_log "Detected profile-based configuration" "debug"
-    return 0  # Using profiles
-  elif command -v yq &> /dev/null; then
-    if yq eval '.services[] | select(has("profiles"))' "$compose_file" 2>/dev/null | grep -q "profiles:"; then
-      bgd_log "Detected profile-based configuration (via yq)" "debug"
-      return 0  # Using profiles
-    fi
-  fi
-  
-  bgd_log "Using project-based configuration" "debug"
-  return 1  # Not using profiles
-}
-
-# Get appropriate deployment command based on approach
-bgd_get_deployment_cmd() {
-  local env_name="$1"
-  local env_file="${2:-.env.${env_name}}"
-  local profile="${3:-$env_name}"
-  local additional_profiles="${4:-persistence}"
-  
-  # Get Docker Compose command
-  local docker_compose=$(bgd_get_docker_compose_cmd)
-  
-  if bgd_is_using_profiles; then
-    local cmd="$docker_compose --env-file \"$env_file\" -f docker-compose.yml"
-    
-    # Add override file if it exists
-    if [ -f "docker-compose.${env_name}.yml" ]; then
-      cmd="$cmd -f docker-compose.${env_name}.yml"
-    fi
-    
-    # Add profiles
-    cmd="$cmd --profile \"$profile\""
-    
-    # Add additional profiles if specified
-    if [ -n "$additional_profiles" ]; then
-      for p in $(echo "$additional_profiles" | tr ',' ' '); do
-        cmd="$cmd --profile \"$p\""
-      done
-    fi
-    
-    echo "$cmd"
-  else
-    # Legacy project-based approach
-    local cmd="$docker_compose -p \"${APP_NAME}-${env_name}\" --env-file \"$env_file\" -f docker-compose.yml"
-    
-    # Add override file if it exists
-    if [ -f "docker-compose.${env_name}.yml" ]; then
-      cmd="$cmd -f docker-compose.${env_name}.yml"
-    fi
-    
-    echo "$cmd"
-  fi
-}
-
-# Find a suitable container to execute commands
-bgd_find_suitable_container() {
-  local env_name="$1"
-  local preferred_services="${2:-app,api,backend,web}"
-  local command="${3:-sh}"
-  
-  bgd_log "Looking for suitable container in $env_name environment" "debug"
-  
-  # Get a list of running containers for this environment
-  local containers=""
-  if bgd_is_using_profiles; then
-    # Get services from profile
-    if type bgd_get_profile_services &>/dev/null; then
-      local services=$(bgd_get_profile_services "docker-compose.yml" "$env_name")
-      for service in $services; do
-        if docker ps --format "{{.Names}}" | grep -q "${APP_NAME}-.*-${service}"; then
-          containers="$containers $(docker ps --format "{{.Names}}" | grep "${APP_NAME}-.*-${service}")"
-        fi
-      done
-    else
-      # Fallback to listing all containers for app
-      containers=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-.*")
-    fi
-  else
-    # Project-based approach
-    containers=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${env_name}")
-  fi
-  
-  if [ -z "$containers" ]; then
-    bgd_log "No containers found for $env_name environment" "warning"
-    return 1
-  fi
-  
-  # Try preferred services first
-  IFS=',' read -ra SERVICES <<< "$preferred_services"
-  for service in "${SERVICES[@]}"; do
-    for container in $containers; do
-      if echo "$container" | grep -q -E "${service}(-1)?$"; then
-        # Check if command is available in this container
-        if docker exec "$container" which "$command" &>/dev/null; then
-          echo "$container"
-          return 0
-        fi
-      fi
-    done
-  done
-  
-  # If no preferred service found, try any container
-  for container in $containers; do
-    # Skip nginx containers as they usually can't run app commands
-    if echo "$container" | grep -q "nginx"; then
-      continue
-    fi
-    
-    # Check if command is available
-    if docker exec "$container" which "$command" &>/dev/null; then
-      echo "$container"
-      return 0
-    fi
-  done
-  
-  bgd_log "No suitable container found for running '$command' in $env_name environment" "warning"
-  return 1
-}
-
-# ============================================================
-# LOGGING SYSTEM
-# ============================================================
-
-# Log severity levels
-declare -A BGD_LOG_LEVEL_COLORS=(
-  ["debug"]="\033[0;37m"    # Light gray
-  ["info"]="\033[0;34m"     # Blue
-  ["warning"]="\033[0;33m"  # Yellow
-  ["error"]="\033[0;31m"    # Red
-  ["critical"]="\033[1;31m" # Bold red
-  ["success"]="\033[0;32m"  # Green
-)
-
-# Log a message with severity
+# Logging function with color output
 bgd_log() {
   local message="$1"
   local level="${2:-info}"
-  local context="${3:-}"
-  local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  local color="${BGD_LOG_LEVEL_COLORS[$level]:-${BGD_LOG_LEVEL_COLORS[info]}}"
-  local color_reset="\033[0m"
-  
-  # Format log message
-  local log_message="[$timestamp] ${color}[${level^^}]${color_reset} $message"
-  
-  # Add context if provided
-  if [ -n "$context" ]; then
-    log_message="$log_message (context: $context)"
-  fi
-  
-  # Print to console
-  echo -e "$log_message"
+  local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
   
   # Create logs directory if it doesn't exist
   bgd_ensure_directory "$BGD_LOGS_DIR"
   
-  # Write to log file (without color codes)
-  echo "[$timestamp] [${level^^}] $message${context:+ (context: $context)}" >> "$BGD_LOG_FILE"
+  # Default log colors
+  local color_reset="\033[0m"
+  local color_level=""
   
-  # Special handling for critical errors
-  if [ "$level" = "critical" ]; then
-    # Send notification if enabled
-    if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
-      bgd_send_notification "CRITICAL: $message" "error"
-    fi
-    
-    # Exit on critical errors unless specifically disabled
-    if [ "${BGD_EXIT_ON_CRITICAL:-true}" = "true" ]; then
-      exit 1
-    fi
-  fi
-}
-
-# Log deployment event to structured log
-bgd_log_deployment_event() {
-  local deployment_id="$1"
-  local event_type="$2"
-  local event_details="$3"
-  local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-  local deployment_log="${BGD_LOGS_DIR}/deployment-${APP_NAME}-${deployment_id}.log"
-  
-  # Create JSON log entry
-  local json_entry="{\"timestamp\":\"$timestamp\",\"deployment_id\":\"$deployment_id\",\"app\":\"$APP_NAME\",\"event\":\"$event_type\",\"details\":\"$event_details\"}"
-  
-  # Write to deployment log file
-  echo "$json_entry" >> "$deployment_log"
-  
-  # Log to main log as well
-  bgd_log "Deployment event: ${event_type} - ${event_details}" "info" "deployment_id=${deployment_id}"
-}
-
-# ============================================================
-# ERROR HANDLING
-# ============================================================
-
-# Structured error handling with suggestions
-bgd_handle_error() {
-  local error_type="$1"
-  local details="${2:-}"
-  local suggestions=""
-  local exit_code=1
-  
-  # Determine error message and suggestions based on error type
-  case "$error_type" in
-    missing_parameter)
-      message="Missing required parameter: $details"
-      suggestions="Ensure all required parameters are specified when running the script"
+  # Set color based on log level
+  case "$level" in
+    debug)
+      color_level="\033[36m"  # Cyan
       ;;
-    invalid_parameter)
-      message="Invalid parameter value: $details"
-      suggestions="Check parameter syntax and ensure values are in the correct format"
+    info)
+      color_level="\033[32m"  # Green
       ;;
-    port_conflict)
-      message="Port conflict detected: $details"
-      suggestions="Specify different ports or use --auto-port-assignment to resolve conflicts automatically"
+    warning)
+      color_level="\033[33m"  # Yellow
       ;;
-    environment_start_failed)
-      message="Failed to start environment: $details"
-      suggestions="Check Docker Compose configuration and ensure all services can start properly"
+    error)
+      color_level="\033[31m"  # Red
       ;;
-    health_check_failed)
-      message="Health check failed: $details"
-      suggestions="Verify your application is configured correctly and the health endpoint is responding"
-      ;;
-    docker_error)
-      message="Docker operation failed: $details"
-      suggestions="Ensure Docker is running and you have sufficient permissions"
-      ;;
-    network_error)
-      message="Network operation failed: $details"
-      suggestions="Check network configuration and ensure network names are valid"
-      ;;
-    file_not_found)
-      message="Required file not found: $details"
-      suggestions="Verify file paths and ensure all required files are present"
-      ;;
-    permission_denied)
-      message="Permission denied: $details"
-      suggestions="Check file/directory permissions and ensure you have sufficient access"
-      ;;
-    unknown)
-      message="Unknown error: $details"
-      suggestions="Check logs for more details"
+    success)
+      color_level="\033[32;1m"  # Bright Green
       ;;
     *)
-      message="Error: $error_type"
-      suggestions="Check logs for more details"
+      color_level="\033[0m"  # Default
       ;;
   esac
   
-  # Log error with details
-  bgd_log "$message" "error" "$details"
+  # Log to console with color
+  echo -e "${color_level}[${level^^}]${color_reset} $message"
   
-  # Log suggestion if available
-  if [ -n "$suggestions" ]; then
-    bgd_log "Suggestion: $suggestions" "info"
-  fi
+  # Log to file without color codes
+  echo "[$timestamp] [${level^^}] $message" >> "$BGD_LOGS_DIR/bgd.log"
   
-  # Log to deployment history
-  if [ -n "${VERSION:-}" ] && [ -n "${APP_NAME:-}" ]; then
-    bgd_log_deployment_event "$VERSION" "deployment_failed" "$error_type"
-  fi
+  return 0
+}
+
+# Parse command line parameters
+bgd_parse_parameters() {
+  # Initialize variables
+  local positional=()
   
-  # Send notification if enabled
-  if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
-    bgd_send_notification "Deployment error: $message" "error"
-  fi
-  
-  # Handle auto-rollback if enabled
-  if [ "${AUTO_ROLLBACK:-false}" = "true" ] && [ -n "${TARGET_ENV:-}" ] && [ -n "${APP_NAME:-}" ]; then
-    bgd_log "Auto-rollback is enabled, attempting to roll back..." "warning"
+  # Loop through all arguments
+  while [[ $# -gt 0 ]]; do
+    local key="$1"
     
-    # Find the rollback script
-    local rollback_script="${BGD_BASE_DIR}/scripts/bgd-rollback.sh"
-    
-    # Perform rollback if script exists
-    if [ -f "$rollback_script" ] && [ -x "$rollback_script" ]; then
-      if "$rollback_script" --app-name="$APP_NAME" --force; then
-        bgd_log "Auto-rollback succeeded" "success"
-        bgd_log_deployment_event "$VERSION" "auto_rollback" "success"
-      else
-        bgd_log "Auto-rollback failed" "critical"
-        bgd_log_deployment_event "$VERSION" "auto_rollback" "failed"
-      fi
-    else
-      bgd_log "Rollback script not found or not executable: $rollback_script" "critical"
+    # Handle --param=value style arguments
+    if [[ $key == --*=* ]]; then
+      local param_name="${key%%=*}"
+      local param_value="${key#*=}"
+      param_name="${param_name#--}"
+      param_name="${param_name//-/_}"
+      param_name="${param_name^^}"
+      
+      # Export the parameter
+      export "$param_name"="$param_value"
+      shift
+      continue
     fi
-  fi
+    
+    # Handle --flag style arguments
+    if [[ $key == --* ]]; then
+      local param_name="${key#--}"
+      param_name="${param_name//-/_}"
+      param_name="${param_name^^}"
+      
+      # Export as true
+      export "$param_name"="true"
+      shift
+      continue
+    fi
+    
+    # Save positional args
+    positional+=("$1")
+    shift
+  done
   
-  # Exit with appropriate code
-  exit $exit_code
+  # Restore positional parameters
+  set -- "${positional[@]}"
+  
+  return 0
 }
 
-# Trap unexpected errors
-bgd_trap_error() {
-  local exit_code=$?
-  local line_no=$1
+# Get active and inactive environments
+bgd_get_environments() {
+  local active_env="blue"
+  local inactive_env="green"
   
-  if [ $exit_code -ne 0 ]; then
-    bgd_log "Unexpected error on line $line_no, exit code $exit_code" "critical"
-    exit $exit_code
+  # Check if environment markers exist
+  if [ -f "${BGD_BASE_DIR}/.bgd-active-env" ]; then
+    active_env=$(cat "${BGD_BASE_DIR}/.bgd-active-env")
+    inactive_env=$([ "$active_env" = "blue" ] && echo "green" || echo "blue")
+  else
+    # Create initial environment markers
+    echo "$active_env" > "${BGD_BASE_DIR}/.bgd-active-env"
+    echo "$inactive_env" > "${BGD_BASE_DIR}/.bgd-inactive-env"
   fi
+  
+  echo "$active_env $inactive_env"
 }
 
-# Set up error trap
-trap 'bgd_trap_error $LINENO' ERR
-
-# ============================================================
-# PARAMETER VALIDATION
-# ============================================================
-
-# Validate a port number
-validate_port() {
-  local port="$1"
-  local param_name="$2"
+# Check health of a specific environment
+bgd_check_environment_health() {
+  local env_name="$1"
+  local app_name="$2"
   
-  if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    bgd_handle_error "invalid_parameter" "${param_name}=${port} (must be a number between 1-65535)"
+  # Construct the health check URL
+  local port=""
+  if [ "$env_name" = "blue" ]; then
+    port="${BLUE_PORT:-8081}"
+  else
+    port="${GREEN_PORT:-8082}"
+  fi
+  
+  # Endpoint to check
+  local endpoint="${HEALTH_ENDPOINT:-/health}"
+  
+  # Determine container name to check
+  local container="${app_name}-${env_name}-app"
+  
+  # Check if container is running
+  if ! docker ps -q -f "name=$container" | grep -q .; then
+    bgd_log "Container $container is not running" "error"
     return 1
   fi
   
-  return 0
+  # Perform health check with curl
+  local retries="${HEALTH_RETRIES:-12}"
+  local delay="${HEALTH_DELAY:-5}"
+  
+  bgd_log "Checking health for $container ($endpoint), retries: $retries, delay: $delay" "info"
+  
+  local attempt=1
+  while [ $attempt -le $retries ]; do
+    bgd_log "Health check attempt $attempt/$retries..." "debug"
+    
+    # Use docker exec to run curl inside the container
+    if docker exec $container curl -s -f "http://localhost:${PORT:-3000}$endpoint" > /dev/null 2>&1; then
+      bgd_log "Health check passed for $container" "success"
+      return 0
+    fi
+    
+    bgd_log "Health check failed, waiting $delay seconds..." "warning"
+    sleep $delay
+    attempt=$((attempt + 1))
+  done
+  
+  bgd_log "Health check failed after $retries attempts" "error"
+  return 1
 }
 
-# Validate a positive integer
-validate_positive_integer() {
-  local value="$1"
-  local param_name="$2"
-  
-  if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "$value" -lt 1 ]; then
-    bgd_handle_error "invalid_parameter" "${param_name}=${value} (must be a positive integer)"
-    return 1
-  fi
-  
-  return 0
-}
-
-# Enhanced input validation for routing parameters
-bgd_validate_routing_parameters() {
-  bgd_log "Validating routing parameters" "info"
-  
-  # Validate paths parameter
-  if [ -n "${PATHS:-}" ]; then
-    IFS=',' read -ra PATH_MAPPINGS <<< "$PATHS"
-    for mapping in "${PATH_MAPPINGS[@]}"; do
-      # Skip empty mappings
-      if [ -z "$mapping" ]; then
-        continue
-      fi
-      
-      # Check format (path:service:port)
-      if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-/]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
-        bgd_handle_error "invalid_parameter" "Invalid path mapping format: $mapping (should be path:service:port)"
-        return 1
-      fi
-      
-      # Extract port and validate
-      local port=$(echo "$mapping" | cut -d':' -f3)
-      if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        bgd_handle_error "invalid_parameter" "Invalid port in path mapping: $mapping"
-        return 1
-      fi
-    done
-  fi
-  
-  # Validate subdomains parameter
-  if [ -n "${SUBDOMAINS:-}" ]; then
-    IFS=',' read -ra SUBDOMAIN_MAPPINGS <<< "$SUBDOMAINS"
-    for mapping in "${SUBDOMAIN_MAPPINGS[@]}"; do
-      # Skip empty mappings
-      if [ -z "$mapping" ]; then
-        continue
-      fi
-      
-      # Check format (subdomain:service:port)
-      if [[ ! "$mapping" =~ ^[a-zA-Z0-9_\-]+:[a-zA-Z0-9_\-]+:[0-9]+$ ]]; then
-        bgd_handle_error "invalid_parameter" "Invalid subdomain mapping format: $mapping (should be subdomain:service:port)"
-        return 1
-      fi
-      
-      # Extract port and validate
-      local port=$(echo "$mapping" | cut -d':' -f3)
-      if [[ ! "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        bgd_handle_error "invalid_parameter" "Invalid port in subdomain mapping: $mapping"
-        return 1
-      fi
-    done
-  fi
-  
-  return 0
-}
-
-# Enhanced validation for all parameters
-bgd_validate_parameters() {
-  local skip_validation="${1:-false}"
-  
-  if [ "$skip_validation" = "true" ]; then
+# Get Docker Compose command (handles both docker-compose and docker compose)
+bgd_get_docker_compose_cmd() {
+  # Check for docker compose (new version)
+  if docker compose version &> /dev/null; then
+    echo "docker compose"
     return 0
   fi
   
-  # Check required parameters
-  for param in "${!BGD_REQUIRED_PARAMS[@]}"; do
-    if [ -z "${!param:-}" ]; then
-      bgd_handle_error "missing_parameter" "$param"
-      return 1
-    fi
-  done
+  # Check for docker-compose (old version)
+  if command -v docker-compose &> /dev/null; then
+    echo "docker-compose"
+    return 0
+  fi
   
-  # Validate parameter values
-  for param in "${!BGD_VALIDATION_RULES[@]}"; do
-    if [ -n "${!param:-}" ]; then
-      local validation_func="${BGD_VALIDATION_RULES[$param]}"
-      "$validation_func" "${!param}" "$param" || return 1
-    fi
-  done
+  # Neither found
+  bgd_log "Neither docker compose nor docker-compose found" "error"
+  return 1
+}
+
+# Create Nginx configuration for single environment
+bgd_create_single_env_nginx_conf() {
+  local env_name="$1"
+  local nginx_conf_dir="${BGD_BASE_DIR}/nginx"
   
-  # Check for port conflicts
-  if [ "${NGINX_PORT:-}" = "${NGINX_SSL_PORT:-}" ]; then
-    bgd_handle_error "port_conflict" "NGINX_PORT and NGINX_SSL_PORT cannot be the same (${NGINX_PORT})"
+  bgd_log "Creating Nginx configuration for $env_name environment" "info"
+  
+  # Ensure nginx directory exists
+  bgd_ensure_directory "$nginx_conf_dir"
+  
+  # Set environment variables for template
+  export ENV_NAME="$env_name"
+  
+  # Process template
+  local template_path="${BGD_TEMPLATES_DIR}/nginx-single-env.conf.template"
+  
+  if [ ! -f "$template_path" ]; then
+    bgd_log "Template not found: $template_path" "error"
     return 1
   fi
   
-  if [ "${BLUE_PORT:-}" = "${GREEN_PORT:-}" ]; then
-    bgd_handle_error "port_conflict" "BLUE_PORT and GREEN_PORT cannot be the same (${BLUE_PORT})"
+  # Simple template processing
+  eval "cat <<EOF
+$(cat $template_path)
+EOF" > "${nginx_conf_dir}/nginx.conf"
+  
+  bgd_log "Nginx configuration created in ${nginx_conf_dir}/nginx.conf" "success"
+  return 0
+}
+
+# Create Nginx configuration for dual environment (weighted)
+bgd_create_dual_env_nginx_conf() {
+  local blue_weight="$1"
+  local green_weight="$2"
+  local nginx_conf_dir="${BGD_BASE_DIR}/nginx"
+  
+  bgd_log "Creating Nginx configuration with weights: blue=$blue_weight%, green=$green_weight%" "info"
+  
+  # Ensure nginx directory exists
+  bgd_ensure_directory "$nginx_conf_dir"
+  
+  # Set environment variables for template
+  export BLUE_WEIGHT="$blue_weight"
+  export GREEN_WEIGHT="$green_weight"
+  
+  # Process template
+  local template_path="${BGD_TEMPLATES_DIR}/nginx-dual-env.conf.template"
+  
+  if [ ! -f "$template_path" ]; then
+    bgd_log "Template not found: $template_path" "error"
     return 1
   fi
   
-  # Validate routing parameters
-  bgd_validate_routing_parameters || return 1
+  # Simple template processing
+  eval "cat <<EOF
+$(cat $template_path)
+EOF" > "${nginx_conf_dir}/nginx.conf"
+  
+  bgd_log "Nginx configuration created in ${nginx_conf_dir}/nginx.conf" "success"
+  return 0
+}
+
+# Log deployment event
+bgd_log_deployment_event() {
+  local version="$1"
+  local event_type="$2"
+  local details="$3"
+  
+  local log_file="${BGD_LOGS_DIR}/deployment-history.log"
+  local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+  local user=$(whoami)
+  
+  # Ensure logs directory exists
+  bgd_ensure_directory "$BGD_LOGS_DIR"
+  
+  # Log the event
+  echo "[$timestamp] [${event_type}] version=$version, user=$user, details=\"$details\"" >> "$log_file"
   
   return 0
 }
 
-# Improved sensitive data sanitization
-bgd_sanitize_sensitive_data() {
-  local input="$1"
-  local sanitized="$input"
-  
-  # Define patterns to sanitize with improved regex
-  local patterns=(
-    "password=[^&[:space:]]*"
-    "passwd=[^&[:space:]]*"
-    "token=[^&[:space:]]*"
-    "secret=[^&[:space:]]*"
-    "key=[^&[:space:]]*"
-    "apikey=[^&[:space:]]*"
-    "api_key=[^&[:space:]]*"
-    "access_token=[^&[:space:]]*"
-    "DATABASE_URL=[^[:space:]]*"
-    "TELEGRAM_BOT_TOKEN=[^[:space:]]*"
-    "SLACK_WEBHOOK=[^[:space:]]*"
-  )
-  
-  # Sanitize each pattern with enhanced regex
-  for pattern in "${patterns[@]}"; do
-    # Use awk for more robust pattern matching
-    sanitized=$(echo "$sanitized" | awk -v pat="$pattern" '{
-      p=match($0, pat);
-      if (p) {
-        before=substr($0, 1, p-1);
-        matched=substr($0, p, RLENGTH);
-        after=substr($0, p+RLENGTH);
-        
-        # Extract the key part (before =)
-        split(matched, parts, "=");
-        key=parts[1];
-        
-        # Replace with sanitized version
-        print before key "=******" after;
-      } else {
-        print $0;
-      }
-    }')
-  done
-  
-  # Sanitize connection strings with enhanced regex
-  sanitized=$(echo "$sanitized" | sed -E 's|([a-zA-Z]+://[^:]+:)[^@[:space:]]+(@)|\\1******\\2|g')
-  
-  echo "$sanitized"
-}
-
-# ============================================================
-# CONFIGURATION MANAGEMENT
-# ============================================================
-
-# Load plugins
+# Automatically detect and load plugins
 bgd_load_plugins() {
-  # Check if plugins directory exists
-  if [ ! -d "$BGD_PLUGINS_DIR" ]; then
-    bgd_log "Plugins directory not found: $BGD_PLUGINS_DIR" "warning"
+  local plugin_dir="${BGD_PLUGINS_DIR:-$BGD_BASE_DIR/plugins}"
+  
+  # Skip if plugins directory doesn't exist
+  if [ ! -d "$plugin_dir" ]; then
+    bgd_log "Plugins directory not found: $plugin_dir" "warning"
     return 0
   fi
   
-  # Check if there are any plugin files
-  local plugin_count=$(find "$BGD_PLUGINS_DIR" -name "bgd-*.sh" -type f 2>/dev/null | wc -l)
-  if [ "$plugin_count" -eq 0 ]; then
-    bgd_log "No plugins found in $BGD_PLUGINS_DIR" "info"
-    return 0
-  fi
+  bgd_log "Loading plugins from: $plugin_dir" "debug"
   
-  bgd_log "Loading plugins..." "info"
-  
-  # Load all plugins
-  for plugin in "$BGD_PLUGINS_DIR"/bgd-*.sh; do
-    if [ -f "$plugin" ] && [ -x "$plugin" ]; then
-      plugin_name=$(basename "$plugin" .sh)
-      bgd_log "Loading plugin: $plugin_name" "info"
-      source "$plugin"
-      
-      # Call registration function if it exists
-      if type "bgd_register_${plugin_name#bgd-}_arguments" &>/dev/null; then
-        "bgd_register_${plugin_name#bgd-}_arguments"
-      fi
+  # Find and source all plugin files that don't end with .disabled
+  local count=0
+  for plugin_file in "$plugin_dir"/bgd-*.sh; do
+    # Skip if no files match or file doesn't exist
+    if [ ! -f "$plugin_file" ] || [[ "$plugin_file" == *".disabled" ]]; then
+      continue
     fi
+    
+    bgd_log "Loading plugin: $(basename "$plugin_file")" "debug"
+    source "$plugin_file" || {
+      bgd_log "Failed to load plugin: $(basename "$plugin_file")" "warning"
+      continue
+    }
+    
+    # Call plugin's registration function if it exists
+    local plugin_name=$(basename "$plugin_file" .sh | sed 's/^bgd-//')
+    local register_func="bgd_register_${plugin_name//-/_}_arguments"
+    
+    if declare -F "$register_func" >/dev/null; then
+      $register_func
+    fi
+    
+    count=$((count + 1))
   done
   
-  bgd_log "Plugin loading completed" "info"
+  bgd_log "Loaded $count plugins" "info"
   return 0
 }
+
+# Enable a plugin
+bgd_enable_plugin() {
+  local plugin_name="$1"
+  local plugin_dir="${BGD_PLUGINS_DIR:-./plugins}"
+  
+  # Check for regular and disabled versions
+  local plugin_file="$plugin_dir/bgd-$plugin_name.sh"
+  local disabled_file="${plugin_file}.disabled"
+  
+  if [ -f "$plugin_file" ]; then
+    bgd_log "Plugin is already enabled: $plugin_name" "info"
+    return 0
+  elif [ -f "$disabled_file" ]; then
+    # Rename disabled file to enable it
+    mv "$disabled_file" "$plugin_file" || {
+      bgd_log "Failed to enable plugin" "error"
+      return 1
+    }
+    
+    # Ensure it's executable
+    chmod +x "$plugin_file" || {
+      bgd_log "Failed to make plugin executable" "warning"
+    }
+    
+    bgd_log "Plugin enabled: $plugin_name" "success"
+    return 0
+  else
+    bgd_log "Plugin not found: $plugin_name" "error"
+    return 1
+  fi
+}
+
+# Disable a plugin
+bgd_disable_plugin() {
+  local plugin_name="$1"
+  local plugin_dir="${BGD_PLUGINS_DIR:-./plugins}"
+  
+  # Check if plugin exists
+  local plugin_file="$plugin_dir/bgd-$plugin_name.sh"
+  local disabled_file="${plugin_file}.disabled"
+  
+  if [ -f "$disabled_file" ]; then
+    bgd_log "Plugin is already disabled: $plugin_name" "info"
+    return 0
+  elif [ -f "$plugin_file" ]; then
+    # Rename file to disable it
+    mv "$plugin_file" "$disabled_file" || {
+      bgd_log "Failed to disable plugin" "error"
+      return 1
+    }
+    
+    bgd_log "Plugin disabled: $plugin_name" "success"
+    return 0
+  else
+    bgd_log "Plugin not found: $plugin_name" "error"
+    return 1
+  fi
+}
+
+# Plugin argument registry
+declare -A BGD_PLUGIN_ARGUMENTS
 
 # Register a plugin argument
 bgd_register_plugin_argument() {
@@ -715,672 +664,36 @@ bgd_register_plugin_argument() {
   local arg_name="$2"
   local default_value="$3"
   
-  BGD_PLUGIN_ARGS["$arg_name"]="$default_value"
+  # Store in the registry
+  BGD_PLUGIN_ARGUMENTS["${plugin_name}.${arg_name}"]="$default_value"
   
-  # Create a global variable with the default value if it doesn't exist
-  if [ -z "${!arg_name:-}" ]; then
-    eval "$arg_name=\"$default_value\""
+  # Set the value if not already defined
+  if [ -z "${!arg_name+x}" ]; then
+    # Export with default value
+    export "$arg_name"="$default_value"
   fi
 }
 
-# Parse command-line parameters
-bgd_parse_parameters() {
-  # First positional argument is the VERSION
-  if [ $# -gt 0 ] && [[ "$1" != --* ]]; then
-    VERSION="$1"
-    shift
-  fi
+# Get plugin argument default
+bgd_get_plugin_argument_default() {
+  local plugin_name="$1"
+  local arg_name="$2"
   
-  # Process remaining arguments
-  while [ $# -gt 0 ]; do
-    # Help command
-    if [ "$1" = "--help" ]; then
-      bgd_show_help
-      exit 0
-    fi
-    
-    # Parse a parameter
-    if [[ "$1" == --* ]]; then
-      local param="${1#--}"
-      
-      # Boolean flag (--flag)
-      if [[ "$param" == *"="* ]]; then
-        # Key-value parameter (--key=value)
-        local key="${param%%=*}"
-        local value="${param#*=}"
-        
-        # Convert to uppercase variable name
-        local var_name=$(echo "$key" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-        
-        # Set the variable
-        eval "$var_name=\"$value\""
-      else
-        # Boolean flag
-        local var_name=$(echo "$param" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-        eval "$var_name=true"
-      fi
-    fi
-    
-    shift
-  done
+  echo "${BGD_PLUGIN_ARGUMENTS["${plugin_name}.${arg_name}"]:-}"
+}
+
+# List registered plugin arguments
+bgd_list_plugin_arguments() {
+  local plugin_name="$1"
   
-  # Set default values for parameters not explicitly set
-  for param in "${!BGD_DEFAULT_VALUES[@]}"; do
-    if [ -z "${!param:-}" ]; then
-      eval "$param=\"${BGD_DEFAULT_VALUES[$param]}\""
+  for key in "${!BGD_PLUGIN_ARGUMENTS[@]}"; do
+    if [[ "$key" == "${plugin_name}."* ]]; then
+      local arg_name=${key#${plugin_name}.}
+      local default_value="${BGD_PLUGIN_ARGUMENTS[$key]}"
+      echo "$arg_name=$default_value"
     fi
   done
-  
-  # Set default values for plugin parameters not explicitly set
-  for param in "${!BGD_PLUGIN_ARGS[@]}"; do
-    if [ -z "${!param:-}" ]; then
-      eval "$param=\"${BGD_PLUGIN_ARGS[$param]}\""
-    fi
-  done
-  
-  # Validate parameters
-  bgd_validate_parameters
-  
-  # Export all parameters
-  for param in "${!BGD_REQUIRED_PARAMS[@]}" "${!BGD_DEFAULT_VALUES[@]}" "${!BGD_PLUGIN_ARGS[@]}"; do
-    if [ -n "${!param:-}" ]; then
-      export "$param"
-    fi
-  done
-  
-  return 0
 }
 
-# ============================================================
-# DOCKER AND CONTAINER MANAGEMENT
-# ============================================================
-
-# Ensure Docker is running
-bgd_ensure_docker_running() {
-  if ! docker info > /dev/null 2>&1; then
-    bgd_handle_error "docker_error" "Docker is not running or not accessible"
-    return 1
-  fi
-  
-  return 0
-}
-
-# Get the appropriate Docker Compose command
-bgd_get_docker_compose_cmd() {
-  if docker compose version &> /dev/null; then
-    echo "docker compose"
-  elif command -v docker-compose &> /dev/null; then
-    echo "docker-compose"
-  else
-    bgd_handle_error "docker_error" "Docker Compose not found"
-    return 1
-  fi
-  
-  return 0
-}
-
-# Get current active and target environments
-bgd_get_environments() {
-  # Get Docker Compose command
-  local docker_compose=$(bgd_get_docker_compose_cmd)
-  
-  # Check if blue environment is running
-  local blue_running=false
-  if $docker_compose -p "${APP_NAME}-blue" ps 2>/dev/null | grep -q "Up"; then
-    blue_running=true
-  fi
-  
-  # Check if green environment is running
-  local green_running=false
-  if $docker_compose -p "${APP_NAME}-green" ps 2>/dev/null | grep -q "Up"; then
-    green_running=true
-  fi
-  
-  # Check Nginx configuration if it exists
-  if [ -f "nginx.conf" ]; then
-    # Check which environment is in the Nginx config
-    if grep -q "${APP_NAME}-blue" nginx.conf 2>/dev/null; then
-      echo "blue green"  # blue active, green target
-      return 0
-    elif grep -q "${APP_NAME}-green" nginx.conf 2>/dev/null; then
-      echo "green blue"  # green active, blue target
-      return 0
-    fi
-  fi
-  
-  # If no clear active environment from Nginx config, use running status
-  if [ "$blue_running" = true ] && [ "$green_running" = false ]; then
-    echo "blue green"
-  elif [ "$green_running" = true ] && [ "$blue_running" = false ]; then
-    echo "green blue"
-  else
-    # Default if no clear active environment
-    echo "blue green"
-  fi
-  
-  return 0
-}
-
-# Check if a port is available
-bgd_is_port_available() {
-  local port="$1"
-  
-  # Validate port number first
-  if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    bgd_log "Invalid port number: $port" "error"
-    return 1
-  fi
-  
-  # Primary approach: Try direct socket test
-  # If we can connect, port is in use (return 1/false)
-  # If connection fails, port is available (return 0/true)
-  if (echo > /dev/tcp/localhost/$port) 2>/dev/null; then
-    # Connection successful, port is in use
-    return 1
-  fi
-  
-  # Fallback 1: Use netstat if available
-  if command -v netstat &> /dev/null; then
-    if netstat -tuln | grep -q ":$port "; then
-      # Port is in use
-      return 1
-    fi
-  fi
-  
-  # Fallback 2: Use ss if available
-  if command -v ss &> /dev/null; then
-    if ss -tuln | grep -q ":$port "; then
-      # Port is in use
-      return 1
-    fi
-  fi
-  
-  # Fallback 3: Use lsof if available
-  if command -v lsof &> /dev/null; then
-    if lsof -i ":$port" &> /dev/null; then
-      # Port is in use
-      return 1
-    fi
-  fi
-  
-  # All tests indicate port is available
-  return 0
-}
-
-# Find an available port starting from a specified port
-bgd_find_available_port() {
-  local start_port="$1"
-  local max_attempts="${2:-100}"
-  
-  local port=$start_port
-  local attempts=0
-  
-  while [ $attempts -lt $max_attempts ]; do
-    if bgd_is_port_available "$port"; then
-      echo "$port"
-      return 0
-    fi
-    
-    port=$((port + 1))
-    attempts=$((attempts + 1))
-  done
-  
-  # No available port found
-  return 1
-}
-
-# Check if a port range is available
-bgd_find_available_port_range() {
-  local start_port="$1"
-  local count="$2"
-  local max_attempts="${3:-100}"
-  
-  local base_port=$start_port
-  local attempts=0
-  
-  while [ $attempts -lt $max_attempts ]; do
-    local all_available=true
-    
-    # Check if all ports in the range are available
-    for i in $(seq 0 $((count-1))); do
-      local port=$((base_port + i))
-      if ! bgd_is_port_available "$port"; then
-        all_available=false
-        break
-      fi
-    done
-    
-    if [ "$all_available" = true ]; then
-      # Return the base port of the available range
-      echo "$base_port"
-      return 0
-    fi
-    
-    # Try next port range
-    base_port=$((base_port + count))
-    attempts=$((attempts + 1))
-  done
-  
-  # No available port range found
-  return 1
-}
-
-# Improved port management with port range finding
-bgd_manage_ports() {
-  if [ "${AUTO_PORT_ASSIGNMENT:-false}" = "true" ]; then
-    bgd_log "Automatic port assignment enabled, checking port availability..." "info"
-    
-    # Use a more sophisticated approach to find available ports
-    # Look for groups of ports to avoid fragmentation
-    
-    # Check if we can find two consecutive ports for blue/green
-    local env_base_port=$(bgd_find_available_port_range 8080 2 50)
-    if [ -n "$env_base_port" ]; then
-      BLUE_PORT=$env_base_port
-      GREEN_PORT=$((env_base_port + 1))
-      bgd_log "Found available port range for environments: Blue=$BLUE_PORT, Green=$GREEN_PORT" "info"
-    else
-      # Fall back to individual port assignment
-      bgd_log "Could not find consecutive ports, falling back to individual assignment" "warning"
-      
-      # Check and adjust blue port if needed
-      if ! bgd_is_port_available "$BLUE_PORT"; then
-        local original_blue_port="$BLUE_PORT"
-        BLUE_PORT=$(bgd_find_available_port $((BLUE_PORT + 1)))
-        bgd_log "Original blue port $original_blue_port is in use, using $BLUE_PORT instead" "warning"
-      fi
-      
-      # Check and adjust green port if needed
-      if ! bgd_is_port_available "$GREEN_PORT"; then
-        local original_green_port="$GREEN_PORT"
-        GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
-        bgd_log "Original green port $original_green_port is in use, using $GREEN_PORT instead" "warning"
-      fi
-      
-      # Ensure blue and green ports don't conflict
-      if [ "$BLUE_PORT" = "$GREEN_PORT" ]; then
-        GREEN_PORT=$(bgd_find_available_port $((GREEN_PORT + 1)))
-        bgd_log "Port conflict detected, using $GREEN_PORT for green environment" "warning"
-      fi
-    fi
-    
-    # Check if we can find two consecutive ports for Nginx
-    local nginx_base_port=$(bgd_find_available_port_range 80 2 10)
-    if [ -n "$nginx_base_port" ]; then
-      NGINX_PORT=$nginx_base_port
-      NGINX_SSL_PORT=$((nginx_base_port + 1))
-      bgd_log "Found available port range for Nginx: HTTP=$NGINX_PORT, HTTPS=$NGINX_SSL_PORT" "info"
-    else
-      # Fall back to individual port assignment
-      bgd_log "Could not find consecutive ports for Nginx, falling back to individual assignment" "warning"
-      
-      # Check and adjust Nginx HTTP port
-      if ! bgd_is_port_available "$NGINX_PORT"; then
-        local original_nginx_port="$NGINX_PORT"
-        NGINX_PORT=$(bgd_find_available_port $((NGINX_PORT + 1)))
-        bgd_log "Original Nginx port $original_nginx_port is in use, using $NGINX_PORT instead" "warning"
-      fi
-      
-      # Check and adjust Nginx HTTPS port
-      if ! bgd_is_port_available "$NGINX_SSL_PORT"; then
-        local original_nginx_ssl_port="$NGINX_SSL_PORT"
-        NGINX_SSL_PORT=$(bgd_find_available_port $((NGINX_SSL_PORT + 1)))
-        bgd_log "Original Nginx SSL port $original_nginx_ssl_port is in use, using $NGINX_SSL_PORT instead" "warning"
-      fi
-    fi
-    
-    bgd_log "Port assignment completed: Nginx=$NGINX_PORT, SSL=$NGINX_SSL_PORT, Blue=$BLUE_PORT, Green=$GREEN_PORT" "success"
-  fi
-}
-
-# ============================================================
-# HEALTH CHECKING
-# ============================================================
-
-# Check health of an endpoint
-bgd_check_health() {
-  local endpoint="$1"
-  local retries="${2:-$HEALTH_RETRIES}"
-  local delay="${3:-$HEALTH_DELAY}"
-  local timeout="${4:-$TIMEOUT}"
-  
-  local count=0
-  local current_delay="$delay"
-  local success=false
-  
-  bgd_log "Starting health check for $endpoint (retries: $retries, delay: ${delay}s)" "info"
-  
-  while [ $count -lt $retries ]; do
-    # Attempt the health check with multiple success criteria
-    response=$(curl -s -m "$timeout" "$endpoint" 2>/dev/null || echo "Connection failed")
-    status_code=$(curl -s -o /dev/null -w "%{http_code}" -m "$timeout" "$endpoint" 2>/dev/null || echo "000")
-    
-    if echo "$response" | grep -qi "\"status\".*healthy" || 
-       echo "$response" | grep -qi "healthy" || 
-       [[ "$status_code" -ge 200 && "$status_code" -lt 300 ]]; then
-      bgd_log "Health check passed! (Status code: $status_code)" "success"
-      success=true
-      break
-    fi
-    
-    count=$((count + 1))
-    if [ $count -lt $retries ]; then
-      bgd_log "Health check failed (attempt $count/$retries, status: $status_code, response: ${response:0:50})" "warning"
-      
-      # Implement backoff if enabled
-      if [ "${RETRY_BACKOFF:-false}" = "true" ]; then
-        current_delay=$((current_delay * 2))
-        bgd_log "Increasing retry delay to ${current_delay}s (backoff enabled)" "info"
-      fi
-      
-      sleep $current_delay
-    else
-      bgd_log "Health check failed after $retries attempts (status: $status_code)" "error"
-    fi
-  done
-  
-  if [ "$success" = true ]; then
-    return 0
-  fi
-  
-  # Health check failed
-  bgd_handle_error "health_check_failed" "Endpoint: $endpoint, Status: $status_code"
-  return 1
-}
-
-# Verify all services in an environment
-bgd_verify_environment_health() {
-  local env_name="$1"
-  local retries="${2:-$HEALTH_RETRIES}"
-  local delay="${3:-$HEALTH_DELAY}"
-  
-  bgd_log "Verifying health of all services in ${env_name} environment..." "info"
-  
-  # Get services with health checks (excluding nginx)
-  local services=$(docker ps --filter "name=${APP_NAME}-${env_name}" --format "{{.Names}}" | grep -v "nginx" || true)
-  
-  if [ -z "$services" ]; then
-    bgd_log "No services found for environment ${env_name}" "warning"
-    return 1
-  fi
-  
-  local healthy_count=0
-  local total_services=0
-  
-  for service in $services; do
-    ((total_services++))
-    bgd_log "Checking health of service: $service" "info"
-    
-    local count=0
-    local service_healthy=false
-    
-    while [ $count -lt $retries ]; do
-      # Check container health status
-      local health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$service" 2>/dev/null)
-      
-      if [ "$health_status" = "healthy" ]; then
-        bgd_log "Service $service is healthy" "success"
-        service_healthy=true
-        ((healthy_count++))
-        break
-      elif [ "$health_status" = "none" ]; then
-        # No health check defined, check if running
-        if docker inspect --format='{{.State.Running}}' "$service" 2>/dev/null | grep -q "true"; then
-          bgd_log "Service $service has no health check defined, but is running" "warning"
-          service_healthy=true
-          ((healthy_count++))
-          break
-        else
-          bgd_log "Service $service is not running" "error"
-          break
-        fi
-      else
-        count=$((count + 1))
-        if [ $count -lt $retries ]; then
-          bgd_log "Service $service is not healthy yet (status: $health_status), retrying in ${delay}s... ($count/$retries)" "info"
-          sleep $delay
-        else
-          bgd_log "Service $service failed to become healthy after $retries attempts" "error"
-        fi
-      fi
-    done
-    
-    if [ "$service_healthy" != true ]; then
-      bgd_log "Service $service failed health checks" "error"
-      # Collect logs from unhealthy service
-      bgd_log "Logs from unhealthy service $service:" "info"
-      docker logs --tail="${MAX_LOG_LINES:-100}" "$service" || true
-    fi
-  done
-  
-  if [ $healthy_count -eq $total_services ]; then
-    bgd_log "All services in ${env_name} environment are healthy ($healthy_count/$total_services)" "success"
-    return 0
-  else
-    bgd_log "Not all services are healthy ($healthy_count/$total_services)" "error"
-    return 1
-  fi
-}
-
-# ============================================================
-# SECURITY FUNCTIONS
-# ============================================================
-
-# Sanitize sensitive data from strings
-bgd_sanitize_sensitive_data() {
-  local input="$1"
-  local sanitized="$input"
-  
-  # Define patterns to sanitize
-  local patterns=(
-    "password=[^&]*"
-    "passwd=[^&]*"
-    "token=[^&]*"
-    "secret=[^&]*"
-    "key=[^&]*"
-    "apikey=[^&]*"
-    "api_key=[^&]*"
-    "access_token=[^&]*"
-    "DATABASE_URL=.*"
-    "TELEGRAM_BOT_TOKEN=.*"
-    "SLACK_WEBHOOK=.*"
-  )
-  
-  # Sanitize each pattern
-  for pattern in "${patterns[@]}"; do
-    sanitized=$(echo "$sanitized" | sed -E "s|($pattern)|\\1=******|g")
-  done
-  
-  # Sanitize connection strings
-  sanitized=$(echo "$sanitized" | sed -E "s|([a-zA-Z]+://[^:]+:)[^@]+(@)|\\1******\\2|g")
-  
-  echo "$sanitized"
-}
-
-# Store credential securely
-bgd_store_credential() {
-  local cred_name="$1"
-  local cred_value="$2"
-  
-  # Create credentials directory if it doesn't exist
-  if [ ! -d "$BGD_CREDENTIALS_DIR" ]; then
-    mkdir -p "$BGD_CREDENTIALS_DIR"
-    chmod 700 "$BGD_CREDENTIALS_DIR"
-  fi
-  
-  # Store credential in file with secure permissions
-  echo "$cred_value" > "$BGD_CREDENTIALS_DIR/$cred_name"
-  chmod 600 "$BGD_CREDENTIALS_DIR/$cred_name"
-  
-  bgd_log "Stored credential: $cred_name" "debug"
-  return 0
-}
-
-# Retrieve credential
-bgd_get_credential() {
-  local cred_name="$1"
-  
-  if [ ! -f "$BGD_CREDENTIALS_DIR/$cred_name" ]; then
-    return 1
-  fi
-  
-  cat "$BGD_CREDENTIALS_DIR/$cred_name"
-  return 0
-}
-
-# Create secure environment file
-bgd_create_secure_env_file() {
-  local env_name="$1"
-  local port="$2"
-  local env_file=".env.${env_name}"
-
-  bgd_log "Creating secure environment file for ${env_name} environment" "info"
-
-  # Basic environment variables
-  cat > "$env_file" << EOL
-# Blue/Green Deployment - Environment File
-# Environment: ${env_name}
-# Generated: $(date)
-# Application: ${APP_NAME}
-
-APP_NAME=${APP_NAME}
-IMAGE=${IMAGE_REPO}:${VERSION}
-PORT=${port}
-ENV_NAME=${env_name}
-EOL
-
-  # Add configuration parameters
-  for param in "NGINX_PORT" "NGINX_SSL_PORT" "DOMAIN_NAME" "DOMAIN_ALIASES"; do
-    if [ -n "${!param:-}" ]; then
-      echo "${param}=${!param}" >> "$env_file"
-    fi
-  done
-
-  # Add docker networking parameters
-  echo "SHARED_NETWORK_EXISTS=true" >> "$env_file"
-  echo "DB_DATA_EXISTS=true" >> "$env_file"
-  echo "REDIS_DATA_EXISTS=true" >> "$env_file"
-
-  # Add any environment variables with secure handling
-  local sensitive_patterns="PASSWORD|SECRET|KEY|TOKEN|DATABASE_URL"
-  
-  # Export explicitly defined sensitive variables
-  if [ -n "${DATABASE_URL:-}" ]; then
-    bgd_log "Adding database connection string to environment file" "debug"
-    echo "DATABASE_URL=${DATABASE_URL}" >> "$env_file"
-  fi
-  
-  if [ -n "${REDIS_URL:-}" ]; then
-    bgd_log "Adding Redis connection string to environment file" "debug"
-    echo "REDIS_URL=${REDIS_URL}" >> "$env_file"
-  fi
-  
-  # Add any DB_* or APP_* environment variables
-  env | grep -E '^(DB_|APP_)' | while read -r line; do
-    # Check if it's a sensitive variable based on name
-    if [[ "$line" =~ $sensitive_patterns ]]; then
-      bgd_log "Adding sensitive environment variable to file" "debug"
-    fi
-    echo "$line" >> "$env_file"
-  done
-  
-  # Add plugin-registered variables
-  for param in "${!BGD_PLUGIN_ARGS[@]}"; do
-    if [[ "$param" =~ ^(DB_|APP_|SERVICE_|SSL_|METRICS_|AUTH_) ]]; then
-      if [ -n "${!param:-}" ]; then
-        echo "${param}=${!param}" >> "$env_file"
-      fi
-    fi
-  done
-
-  # Set secure permissions
-  chmod 600 "$env_file"
-  bgd_log "Created secure environment file: $env_file" "success"
-}
-
-# ============================================================
-# NOTIFICATION SYSTEM
-# ============================================================
-
-# Send a notification
-bgd_send_notification() {
-  local message="$1"
-  local level="${2:-info}"
-  
-  # Skip if notifications are disabled
-  if [ "${NOTIFY_ENABLED:-false}" != "true" ]; then
-    return 0
-  fi
-  
-  # Add emoji based on level
-  local emoji=""
-  case "$level" in
-    info) emoji="ℹ️" ;;
-    warning) emoji="⚠️" ;;
-    error) emoji="🚨" ;;
-    success) emoji="✅" ;;
-    *) emoji="ℹ️" ;;
-  esac
-  
-  local formatted_message="$emoji *${APP_NAME}*: $message"
-  
-  # Send to Telegram if configured
-  if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
-    bgd_log "Sending Telegram notification" "debug"
-    
-    # Securely send notification, avoiding token exposure in logs
-    local telegram_token="${TELEGRAM_BOT_TOKEN}"
-    local chat_id="${TELEGRAM_CHAT_ID}"
-    
-    curl -s -X POST "https://api.telegram.org/bot${telegram_token}/sendMessage" \
-      -d chat_id="${chat_id}" \
-      -d text="${formatted_message}" \
-      -d parse_mode="Markdown" > /dev/null
-    
-    local status=$?
-    if [ $status -ne 0 ]; then
-      bgd_log "Failed to send Telegram notification" "warning"
-    fi
-  fi
-  
-  # Send to Slack if configured
-  if [ -n "${SLACK_WEBHOOK:-}" ]; then
-    bgd_log "Sending Slack notification" "debug"
-    
-    # Securely send notification
-    local slack_webhook="${SLACK_WEBHOOK}"
-    
-    curl -s -X POST "${slack_webhook}" \
-      -H "Content-Type: application/json" \
-      -d "{\"text\":\"${formatted_message}\"}" > /dev/null
-    
-    local status=$?
-    if [ $status -ne 0 ]; then
-      bgd_log "Failed to send Slack notification" "warning"
-    fi
-  fi
-  
-  return 0
-}
-
-# ============================================================
-# INITIALIZATION
-# ============================================================
-
-# Initialize BGD toolkit
-bgd_initialize() {
-  # Create required directories
-  bgd_create_directories
-  
-  # Load plugins
-  bgd_load_plugins
-  
-  # Ensure Docker is running
-  bgd_ensure_docker_running
-  
-  # Log initialization status
-  bgd_log "Blue/Green Deployment Toolkit initialized" "info"
-}
-
-# Call initialization when the script is sourced
-bgd_initialize
+# Call initialization during source
+bgd_init

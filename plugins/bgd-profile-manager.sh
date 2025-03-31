@@ -1,404 +1,457 @@
 #!/bin/bash
 #
-# bgd-profile-manager.sh - Profile management plugin for Blue/Green Deployment
+# bgd-profile-manager.sh - Environment Profile Manager Plugin for Blue/Green Deployment
 #
-# This plugin provides profile management capabilities:
-# - Automatic profile discovery and validation
-# - Service dependency resolution
-# - Profile reporting
+# This plugin manages deployment environment profiles:
+# - Environment-specific configurations
+# - Variable substitution in templates
+# - Profile activation and switching
 
 # Register plugin arguments
 bgd_register_profile_manager_arguments() {
-  bgd_register_plugin_argument "profile-manager" "AUTO_DISCOVER_PROFILES" "true"
-  bgd_register_plugin_argument "profile-manager" "VALIDATE_PROFILES" "true"
-  bgd_register_plugin_argument "profile-manager" "AUTO_RESOLVE_DEPENDENCIES" "true"
-  bgd_register_plugin_argument "profile-manager" "DEFAULT_PROFILE" "${ENV_NAME:-blue}"
-  bgd_register_plugin_argument "profile-manager" "INCLUDE_PERSISTENCE" "true"
+  bgd_register_plugin_argument "profile-manager" "PROFILE_ENABLED" "false"
+  bgd_register_plugin_argument "profile-manager" "PROFILE_DIR" "./profiles"
+  bgd_register_plugin_argument "profile-manager" "DEFAULT_PROFILE" "default"
+  bgd_register_plugin_argument "profile-manager" "CURRENT_PROFILE" ""
+  bgd_register_plugin_argument "profile-manager" "PROFILE_INHERITANCE" "true"
+  bgd_register_plugin_argument "profile-manager" "ENVIRONMENT_SPECIFIC" "true"
 }
 
-# Discover profiles in docker-compose.yml
-bgd_discover_profiles() {
-  local compose_file="${1:-docker-compose.yml}"
+# Create default profile structure if it doesn't exist
+bgd_create_default_profile() {
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  local default_profile="${DEFAULT_PROFILE:-default}"
+  local profile_path="$profile_dir/$default_profile"
   
-  bgd_log "Discovering profiles in $compose_file" "info"
+  bgd_log "Creating default profile structure at $profile_path" "info"
   
-  if ! [ -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1
+  # Create directory structure
+  bgd_ensure_directory "$profile_path"
+  bgd_ensure_directory "$profile_path/templates"
+  bgd_ensure_directory "$profile_path/env"
+  
+  # Create default environment file if it doesn't exist
+  if [ ! -f "$profile_path/env/common.env" ]; then
+    cat > "$profile_path/env/common.env" << 'EOL'
+# Common environment variables for all environments
+LOG_LEVEL=info
+DEFAULT_PORT=3000
+HEALTH_ENDPOINT=/health
+HEALTH_RETRIES=12
+HEALTH_DELAY=5
+EOL
   fi
   
-  # Use yq if available, otherwise fallback to grep and awk
-  if command -v yq &> /dev/null; then
-    local profiles=$(yq eval '.services.*.profiles[]' "$compose_file" | sort -u)
-    if [ -z "$profiles" ]; then
-      bgd_log "No profiles found in $compose_file" "warning"
-      return 1
-    fi
-    echo "$profiles"
-    return 0
-  else
-    # Fallback method using grep and awk
-    local profiles=$(grep -A 1 "profiles:" "$compose_file" | grep -v "profiles:" | awk -F'"' '{print $2}' | sort -u)
-    if [ -z "$profiles" ]; then
-      bgd_log "No profiles found in $compose_file" "warning"
-      return 1
-    fi
-    echo "$profiles"
-    return 0
+  # Create environment-specific files if they don't exist
+  if [ ! -f "$profile_path/env/blue.env" ]; then
+    cat > "$profile_path/env/blue.env" << 'EOL'
+# Blue environment-specific variables
+ENV_NAME=blue
+PORT=8081
+EOL
   fi
-}
+  
+  if [ ! -f "$profile_path/env/green.env" ]; then
+    cat > "$profile_path/env/green.env" << 'EOL'
+# Green environment-specific variables
+ENV_NAME=green
+PORT=8082
+EOL
+  fi
+  
+  # Create a default README to explain the profile system
+  if [ ! -f "$profile_path/README.md" ]; then
+    cat > "$profile_path/README.md" << 'EOL'
+# Deployment Profile
 
-# Validate that services have profiles defined
-bgd_validate_profiles() {
-  local compose_file="${1:-docker-compose.yml}"
-  
-  bgd_log "Validating profiles in $compose_file" "info"
-  
-  if ! [ -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1
-  fi
-  
-  local missing_profiles=0
-  
-  # Find services without profiles
-  if command -v yq &> /dev/null; then
-    # Get all services
-    local all_services=$(yq eval '.services | keys | .[]' "$compose_file")
-    
-    # Check each service for profiles
-    for service in $all_services; do
-      if ! yq eval ".services.${service}.profiles" "$compose_file" | grep -q "\[" ; then
-        bgd_log "Service '$service' has no profiles defined" "warning"
-        missing_profiles=$((missing_profiles + 1))
-      fi
-    done
-  else
-    # Fallback method using grep
-    local services=$(grep -E "^  [a-zA-Z0-9_-]+:" "$compose_file" | sed 's/://' | tr -d ' ')
-    
-    for service in $services; do
-      if ! grep -A 10 "^  $service:" "$compose_file" | grep -q "profiles:"; then
-        bgd_log "Service '$service' has no profiles defined" "warning"
-        missing_profiles=$((missing_profiles + 1))
-      fi
-    done
-  fi
-  
-  if [ $missing_profiles -gt 0 ]; then
-    bgd_log "Found $missing_profiles services without profiles" "warning"
-    return 1
-  else
-    bgd_log "All services have profiles defined" "success"
-    return 0
-  fi
-}
+This directory contains environment configuration profiles for the Blue/Green Deployment system.
 
-# Get services for a specific profile
-bgd_get_profile_services() {
-  local compose_file="${1:-docker-compose.yml}"
-  local profile="$2"
-  
-  bgd_log "Getting services for profile: $profile" "info"
-  
-  if ! [ -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1
-  fi
-  
-  # Use yq if available, otherwise fallback to grep
-  if command -v yq &> /dev/null; then
-    local services=$(yq eval ".services | to_entries | .[] | select(.value.profiles | contains([\"$profile\"])) | .key" "$compose_file")
-    echo "$services"
-    return 0
-  else
-    # Fallback method - more accurate pattern matching
-    local services=""
-    while IFS= read -r line; do
-      if [[ "$line" =~ ^[[:space:]]*([a-zA-Z0-9_\-]+): ]]; then
-        service="${BASH_REMATCH[1]}"
-        # More precise pattern matching with context for finding profiles
-        if grep -A 10 "^[[:space:]]*$service:" "$compose_file" | grep -A 2 "profiles:" | grep -q "$profile"; then
-          services="$services $service"
-        fi
-      fi
-    done < "$compose_file"
-    
-    echo "$services"
-    return 0
-  fi
-}
+## Structure
 
-# Resolve service dependencies
-bgd_resolve_dependencies() {
-  local compose_file="${1:-docker-compose.yml}"
-  local service_list="$2"
-  
-  bgd_log "Resolving dependencies for services: $service_list" "info"
-  
-  if ! [ -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1
+- `env/` - Environment variable files
+  - `common.env` - Variables shared by all environments
+  - `blue.env` - Blue environment specific variables
+  - `green.env` - Green environment specific variables
+  - `production.env` - Production overrides
+  - `development.env` - Development overrides
+
+- `templates/` - Custom templates for this profile
+  - Override any templates from the main template directory
+
+## Usage
+
+Activate a profile with:
+
+```bash
+./scripts/bgd-profile.sh --activate=profile_name
+```
+
+Create a new profile with:
+
+```bash
+./scripts/bgd-profile.sh --create=new_profile_name
+```
+
+List available profiles:
+
+```bash
+./scripts/bgd-profile.sh --list
+```
+EOL
   fi
   
-  local resolved_services="$service_list"
-  
-  # Add persistence profile if enabled
-  if [ "${INCLUDE_PERSISTENCE:-true}" = "true" ]; then
-    bgd_log "Checking for persistence services" "info"
-    
-    # Use yq if available
-    if command -v yq &> /dev/null; then
-      local persistence_services=$(yq eval '.services | to_entries | .[] | select(.value.profiles | contains(["persistence"])) | .key' "$compose_file")
-      
-      for service in $persistence_services; do
-        if ! echo "$resolved_services" | grep -q "$service"; then
-          bgd_log "Adding persistence service: $service" "info"
-          if [ -n "$resolved_services" ]; then
-            resolved_services="$resolved_services,$service"
-          else
-            resolved_services="$service"
-          fi
-        fi
-      done
-    else
-      # Fallback method using grep
-      local potential_services=$(grep -B 5 "persistence" "$compose_file" | grep -E "^  [a-zA-Z0-9_-]+:" | sed 's/://' | tr -d ' ')
-      
-      for service in $potential_services; do
-        if ! echo "$resolved_services" | grep -q "$service"; then
-          bgd_log "Adding potential persistence service: $service" "info"
-          if [ -n "$resolved_services" ]; then
-            resolved_services="$resolved_services,$service"
-          else
-            resolved_services="$service"
-          fi
-        fi
-      done
-    fi
-  fi
-  
-  # Check dependency tree for each service
-  for service in $(echo "$service_list" | tr ',' ' '); do
-    # Skip empty services
-    if [ -z "$service" ]; then
-      continue
-    fi
-    
-    bgd_log "Checking dependencies for service: $service" "debug"
-    
-    # Use yq if available
-    if command -v yq &> /dev/null; then
-      # Get direct dependencies
-      local dependencies=$(yq eval ".services.${service}.depends_on[]" "$compose_file" 2>/dev/null)
-      
-      # Add dependencies if not already included
-      for dep in $dependencies; do
-        if ! echo "$resolved_services" | grep -q "$dep"; then
-          bgd_log "Adding dependency: $dep" "info"
-          resolved_services="$resolved_services,$dep"
-          
-          # Recursively resolve dependencies of this dependency
-          local sub_deps=$(bgd_resolve_dependencies "$compose_file" "$dep")
-          
-          # Add any new dependencies found
-          for sub_dep in $(echo "$sub_deps" | tr ',' ' '); do
-            if [ -n "$sub_dep" ] && ! echo "$resolved_services" | grep -q "$sub_dep"; then
-              resolved_services="$resolved_services,$sub_dep"
-            fi
-          done
-        fi
-      done
-    else
-      # Fallback method using grep
-      local dependencies=$(grep -A 10 "^  $service:" "$compose_file" | grep -A 5 "depends_on:" | grep -v "depends_on:" | grep -v "^\s*$" | sed 's/-//' | tr -d ' ')
-      
-      # Add dependencies if not already included
-      for dep in $dependencies; do
-        if ! echo "$resolved_services" | grep -q "$dep"; then
-          bgd_log "Adding dependency: $dep" "info"
-          resolved_services="$resolved_services,$dep"
-        fi
-      done
-    fi
-  done
-  
-  # Clean up comma-separated list (remove duplicates, leading/trailing commas)
-  resolved_services=$(echo "$resolved_services" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/^,//;s/,$//')
-  
-  echo "$resolved_services"
+  bgd_log "Default profile structure created at $profile_path" "success"
   return 0
 }
 
-# Generate profile information report
-bgd_generate_profile_report() {
-  local compose_file="${1:-docker-compose.yml}"
-  local output_file="${2:-profile-report.txt}"
-  
-  bgd_log "Generating profile report for $compose_file" "info"
-  
-  if ! [ -f "$compose_file" ]; then
-    bgd_log "Docker Compose file not found: $compose_file" "error"
-    return 1
+# Initialize profile system
+bgd_init_profiles() {
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    return 0
   fi
   
-  # Create report header
-  cat > "$output_file" << EOL
-===================================================
-Docker Compose Profile Report
-===================================================
-File: $compose_file
-Generated: $(date)
-
-===================================================
-1. Available Profiles
-===================================================
-EOL
-
-  # Add discovered profiles
-  local profiles=$(bgd_discover_profiles "$compose_file")
-  echo "$profiles" | while read -r profile; do
-    echo "- $profile" >> "$output_file"
-  done
-
-  # Add services section
-  cat >> "$output_file" << EOL
-
-===================================================
-2. Services by Profile
-===================================================
-EOL
-
-  # For each profile, list the services
-  for profile in $profiles; do
-    echo "Profile: $profile" >> "$output_file"
-    echo "----------------" >> "$output_file"
-    
-    if command -v yq &> /dev/null; then
-      local services=$(yq eval ".services | to_entries | .[] | select(.value.profiles | contains([\"$profile\"])) | .key" "$compose_file")
-      echo "$services" | while read -r service; do
-        echo "- $service" >> "$output_file"
-      done
-    else
-      # Fallback method using grep
-      local services=$(grep -B 10 "$profile" "$compose_file" | grep -E "^  [a-zA-Z0-9_-]+:" | sed 's/://' | tr -d ' ' | sort -u)
-      for service in $services; do
-        echo "- $service" >> "$output_file"
-      done
-    fi
-    
-    echo "" >> "$output_file"
-  done
-
-  # Add dependency section
-  cat >> "$output_file" << EOL
-===================================================
-3. Service Dependencies
-===================================================
-EOL
-
-  # List services and their dependencies
-  if command -v yq &> /dev/null; then
-    local all_services=$(yq eval '.services | keys | .[]' "$compose_file")
-    
-    for service in $all_services; do
-      echo "Service: $service" >> "$output_file"
-      
-      # Get dependencies
-      local deps=$(yq eval ".services.${service}.depends_on[]" "$compose_file" 2>/dev/null)
-      
-      if [ -n "$deps" ]; then
-        echo "Dependencies:" >> "$output_file"
-        echo "$deps" | while read -r dep; do
-          echo "- $dep" >> "$output_file"
-        done
-      else
-        echo "No explicit dependencies" >> "$output_file"
-      fi
-      
-      echo "" >> "$output_file"
-    done
-  else
-    # Simplified version for non-yq environments
-    grep -E "^  [a-zA-Z0-9_-]+:" "$compose_file" | sed 's/://' | tr -d ' ' | while read -r service; do
-      echo "Service: $service" >> "$output_file"
-      
-      # Try to find dependencies
-      local deps=$(grep -A 5 "^  $service:" "$compose_file" | grep -A 5 "depends_on:" | grep -v "depends_on:" | grep -v "^\s*$" | sed 's/-//' | tr -d ' ')
-      
-      if [ -n "$deps" ]; then
-        echo "Dependencies:" >> "$output_file"
-        echo "$deps" | while read -r dep; do
-          echo "- $dep" >> "$output_file"
-        done
-      else
-        echo "No explicit dependencies" >> "$output_file"
-      fi
-      
-      echo "" >> "$output_file"
-    done
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  
+  # Create directory if it doesn't exist
+  bgd_ensure_directory "$profile_dir"
+  
+  # Check if default profile exists, create if not
+  local default_profile="${DEFAULT_PROFILE:-default}"
+  local default_profile_path="$profile_dir/$default_profile"
+  
+  if [ ! -d "$default_profile_path" ]; then
+    bgd_log "Default profile does not exist, creating it" "info"
+    bgd_create_default_profile
   fi
-
-  # Add profile recommendations
-  cat >> "$output_file" << EOL
-===================================================
-4. Profile Recommendations
-===================================================
-EOL
-
-  # Example recommendation for blue/green deployment
-  cat >> "$output_file" << EOL
-For Blue/Green deployment:
-- Use "blue" and "green" profiles for environment-specific services
-- Use "persistence" profile for shared services like databases
-- Use "tools" profile for utility services (monitoring, etc.)
-
-Recommended service groups:
-- Frontend services: Use environment profiles
-- API services: Use environment profiles
-- Database services: Use persistence profile
-- Cache services: Use persistence profile
-EOL
-
-  bgd_log "Profile report generated: $output_file" "success"
+  
+  # Set current profile if not set
+  if [ -z "${CURRENT_PROFILE}" ]; then
+    export CURRENT_PROFILE="$default_profile"
+  fi
+  
+  bgd_log "Profile system initialized with profile: $CURRENT_PROFILE" "info"
   return 0
 }
 
-# Hook: Before deployment, validate profiles if enabled
+# Load a specific profile
+bgd_load_profile() {
+  local profile_name="${1:-${CURRENT_PROFILE:-${DEFAULT_PROFILE:-default}}}"
+  local env_name="${2:-}"
+  
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  local profile_path="$profile_dir/$profile_name"
+  
+  if [ ! -d "$profile_path" ]; then
+    bgd_log "Profile not found: $profile_name" "error"
+    return 1
+  fi
+  
+  bgd_log "Loading profile: $profile_name" "info"
+  
+  # First load common variables
+  local common_env="$profile_path/env/common.env"
+  if [ -f "$common_env" ]; then
+    bgd_log "Loading common environment variables from $common_env" "debug"
+    set -a
+    source "$common_env"
+    set +a
+  fi
+  
+  # Then load environment-specific variables if requested
+  if [ -n "$env_name" ] && [ "${ENVIRONMENT_SPECIFIC:-true}" = "true" ]; then
+    local env_file="$profile_path/env/$env_name.env"
+    if [ -f "$env_file" ]; then
+      bgd_log "Loading $env_name environment variables from $env_file" "debug"
+      set -a
+      source "$env_file"
+      set +a
+    else
+      bgd_log "Environment file not found: $env_file" "warning"
+    fi
+  fi
+  
+  # Load parent profile if inheritance is enabled and parent is specified
+  if [ "${PROFILE_INHERITANCE:-true}" = "true" ]; then
+    local parent_profile=""
+    
+    # Check if PARENT_PROFILE is defined in the current profile's common.env
+    if [ -n "${PARENT_PROFILE:-}" ]; then
+      parent_profile="$PARENT_PROFILE"
+      
+      # Avoid circular references
+      if [ "$parent_profile" = "$profile_name" ]; then
+        bgd_log "Circular profile inheritance detected, skipping parent" "warning"
+      else
+        bgd_log "Loading parent profile: $parent_profile" "debug"
+        bgd_load_profile "$parent_profile" "$env_name"
+      fi
+    fi
+  fi
+  
+  # Set current profile
+  export CURRENT_PROFILE="$profile_name"
+  
+  # Override templates if profile has custom templates
+  local template_dir="$profile_path/templates"
+  if [ -d "$template_dir" ] && [ -n "$(ls -A "$template_dir" 2>/dev/null)" ]; then
+    bgd_log "Using custom templates from profile: $profile_name" "info"
+    export BGD_TEMPLATES_DIR="$template_dir"
+  fi
+  
+  bgd_log "Profile loaded: $profile_name" "success"
+  return 0
+}
+
+# Create a new profile
+bgd_create_profile() {
+  local new_profile="$1"
+  local base_profile="${2:-${DEFAULT_PROFILE:-default}}"
+  
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    bgd_log "Profile system is disabled" "warning"
+    return 1
+  fi
+  
+  if [ -z "$new_profile" ]; then
+    bgd_log "Profile name not specified" "error"
+    return 1
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  local new_profile_path="$profile_dir/$new_profile"
+  local base_profile_path="$profile_dir/$base_profile"
+  
+  # Check if new profile already exists
+  if [ -d "$new_profile_path" ]; then
+    bgd_log "Profile already exists: $new_profile" "error"
+    return 1
+  fi
+  
+  # Check if base profile exists
+  if [ ! -d "$base_profile_path" ]; then
+    bgd_log "Base profile not found: $base_profile" "error"
+    return 1
+  fi
+  
+  bgd_log "Creating new profile: $new_profile based on $base_profile" "info"
+  
+  # Create directory structure
+  bgd_ensure_directory "$new_profile_path"
+  bgd_ensure_directory "$new_profile_path/templates"
+  bgd_ensure_directory "$new_profile_path/env"
+  
+  # Copy environment files from base profile
+  cp -r "$base_profile_path/env/"* "$new_profile_path/env/"
+  
+  # Update common.env to reference parent profile
+  local common_env="$new_profile_path/env/common.env"
+  if [ -f "$common_env" ]; then
+    echo "# Inherits from parent profile" >> "$common_env"
+    echo "PARENT_PROFILE=$base_profile" >> "$common_env"
+  fi
+  
+  bgd_log "New profile created: $new_profile" "success"
+  return 0
+}
+
+# List all available profiles
+bgd_list_profiles() {
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    bgd_log "Profile system is disabled" "warning"
+    return 1
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  
+  if [ ! -d "$profile_dir" ]; then
+    bgd_log "Profile directory not found: $profile_dir" "error"
+    return 1
+  fi
+  
+  bgd_log "Available profiles:" "info"
+  
+  # List all subdirectories in the profiles directory
+  local profiles=""
+  for dir in "$profile_dir"/*; do
+    if [ -d "$dir" ]; then
+      local profile_name=$(basename "$dir")
+      
+      # Mark current profile with an asterisk
+      if [ "$profile_name" = "${CURRENT_PROFILE:-}" ]; then
+        profile_name="* $profile_name (active)"
+      fi
+      
+      echo "  - $profile_name"
+      profiles="1"
+    fi
+  done
+  
+  if [ -z "$profiles" ]; then
+    bgd_log "No profiles found" "warning"
+    return 1
+  fi
+  
+  return 0
+}
+
+# Delete a profile
+bgd_delete_profile() {
+  local profile_name="$1"
+  local force="${2:-false}"
+  
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    bgd_log "Profile system is disabled" "warning"
+    return 1
+  fi
+  
+  if [ -z "$profile_name" ]; then
+    bgd_log "Profile name not specified" "error"
+    return 1
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  local profile_path="$profile_dir/$profile_name"
+  
+  # Check if profile exists
+  if [ ! -d "$profile_path" ]; then
+    bgd_log "Profile not found: $profile_name" "error"
+    return 1
+  fi
+  
+  # Check if it's the default profile
+  if [ "$profile_name" = "${DEFAULT_PROFILE:-default}" ] && [ "$force" != "true" ]; then
+    bgd_log "Cannot delete default profile without --force" "error"
+    return 1
+  fi
+  
+  # Check if it's the current profile
+  if [ "$profile_name" = "${CURRENT_PROFILE:-}" ] && [ "$force" != "true" ]; then
+    bgd_log "Cannot delete active profile without --force" "error"
+    return 1
+  fi
+  
+  bgd_log "Deleting profile: $profile_name" "info"
+  
+  rm -rf "$profile_path"
+  
+  bgd_log "Profile deleted: $profile_name" "success"
+  return 0
+}
+
+# Export a profile to a file
+bgd_export_profile() {
+  local profile_name="${1:-${CURRENT_PROFILE:-${DEFAULT_PROFILE:-default}}}"
+  local output_file="${2:-$profile_name-profile.tar.gz}"
+  
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    bgd_log "Profile system is disabled" "warning"
+    return 1
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  local profile_path="$profile_dir/$profile_name"
+  
+  # Check if profile exists
+  if [ ! -d "$profile_path" ]; then
+    bgd_log "Profile not found: $profile_name" "error"
+    return 1
+  fi
+  
+  bgd_log "Exporting profile: $profile_name to $output_file" "info"
+  
+  tar -czf "$output_file" -C "$profile_dir" "$profile_name"
+  
+  bgd_log "Profile exported to: $output_file" "success"
+  return 0
+}
+
+# Import a profile from a file
+bgd_import_profile() {
+  local input_file="$1"
+  local new_name="${2:-}"
+  
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    bgd_log "Profile system is disabled" "warning"
+    return 1
+  fi
+  
+  if [ -z "$input_file" ] || [ ! -f "$input_file" ]; then
+    bgd_log "Input file not found: $input_file" "error"
+    return 1
+  fi
+  
+  local profile_dir="${PROFILE_DIR:-./profiles}"
+  
+  bgd_log "Importing profile from: $input_file" "info"
+  
+  # Create temporary directory for extraction
+  local temp_dir=$(mktemp -d)
+  
+  # Extract archive
+  tar -xzf "$input_file" -C "$temp_dir"
+  
+  # Find extracted profile directory
+  local extracted_profile=""
+  for dir in "$temp_dir"/*; do
+    if [ -d "$dir" ]; then
+      extracted_profile=$(basename "$dir")
+      break
+    fi
+  done
+  
+  if [ -z "$extracted_profile" ]; then
+    bgd_log "No profile found in archive" "error"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  
+  # Determine final profile name
+  local target_profile="${new_name:-$extracted_profile}"
+  local target_path="$profile_dir/$target_profile"
+  
+  # Check if target profile already exists
+  if [ -d "$target_path" ]; then
+    bgd_log "Profile already exists: $target_profile" "error"
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  
+  # Ensure profile directory exists
+  bgd_ensure_directory "$profile_dir"
+  
+  # Move extracted profile to profiles directory
+  if [ "$target_profile" = "$extracted_profile" ]; then
+    mv "$temp_dir/$extracted_profile" "$profile_dir/"
+  else
+    mkdir -p "$target_path"
+    cp -r "$temp_dir/$extracted_profile/"* "$target_path/"
+  fi
+  
+  # Clean up temporary directory
+  rm -rf "$temp_dir"
+  
+  bgd_log "Profile imported as: $target_profile" "success"
+  return 0
+}
+
+# Integration with other plugins
 bgd_hook_pre_deploy() {
   local version="$1"
   local app_name="$2"
   
-  if [ "${VALIDATE_PROFILES:-true}" = "true" ]; then
-    bgd_validate_profiles "docker-compose.yml" || {
-      bgd_log "Profile validation failed, continuing anyway" "warning"
-      # Don't return error to allow compatibility with non-profile setups
-    }
+  if [ "${PROFILE_ENABLED:-false}" != "true" ]; then
+    return 0
   fi
   
-  # Auto-resolve dependencies if enabled and services specified
-  if [ "${AUTO_RESOLVE_DEPENDENCIES:-true}" = "true" ] && [ -n "${SERVICES:-}" ]; then
-    local resolved_services=$(bgd_resolve_dependencies "docker-compose.yml" "$SERVICES")
-    if [ $? -eq 0 ] && [ -n "$resolved_services" ]; then
-      export SERVICES="$resolved_services"
-      bgd_log "Resolved service dependencies: $SERVICES" "info"
-    else
-      bgd_log "Failed to resolve dependencies, using original services list" "warning"
-    fi
-  fi
+  # Initialize profile system
+  bgd_init_profiles
   
-  return 0
-}
-
-# Hook: After deployment, generate profile report
-bgd_hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
+  # Load current profile
+  bgd_load_profile "${CURRENT_PROFILE}" "${TARGET_ENV}"
   
-  # Generate profile report
-  if [ "${AUTO_DISCOVER_PROFILES:-true}" = "true" ]; then
-    bgd_generate_profile_report "docker-compose.yml" "${BGD_LOGS_DIR}/profile-report-${version}.txt"
-  fi
-  
-  return 0
+  return $?
 }

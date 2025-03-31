@@ -2,545 +2,603 @@
 #
 # bgd-master-proxy.sh - Master reverse proxy plugin for Blue/Green Deployment
 #
-# This plugin integrates with the master proxy to register and unregister applications
-# during deployment, cutover, and cleanup operations.
+# This plugin manages a top-level Nginx proxy for multiple applications:
+# - Automatically routes traffic to applications based on domain name
+# - Central SSL certificate management
+# - Multiple applications under a single proxy
 
 # Register plugin arguments
 bgd_register_master_proxy_arguments() {
-  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_ENABLED" "true"
-  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_DIR" "/app/master-proxy"
-  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_REGISTRY" "${MASTER_PROXY_DIR}/app-registry.json"
-  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_CONTAINER" "bgd-master-proxy"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_ENABLED" "false"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_NAME" "bgd-master-proxy"
   bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_PORT" "80"
   bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_SSL_PORT" "443"
-  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_AUTO_SETUP" "true"
+  bgd_register_plugin_argument "master-proxy" "MASTER_PROXY_DIR" "./master-proxy"
+  bgd_register_plugin_argument "master-proxy" "DEFAULT_APP" ""
+  bgd_register_plugin_argument "master-proxy" "AUTO_REGISTER" "true"
+  bgd_register_plugin_argument "master-proxy" "LETSENCRYPT_EMAIL" ""
 }
 
-# Check if master proxy is initialized
-bgd_check_master_proxy() {
-  # Check if the container is running
-  if docker ps -q --filter "name=${MASTER_PROXY_CONTAINER:-bgd-master-proxy}" | grep -q .; then
-    return 0
-  fi
-  return 1
-}
-
-# Initialize the master proxy if not already set up
+# Initialize master proxy
 bgd_init_master_proxy() {
-  # Skip if not enabled
-  if [ "${MASTER_PROXY_ENABLED:-true}" != "true" ]; then
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
     return 0
   fi
   
-  # Check if already running
-  if bgd_check_master_proxy; then
-    bgd_log "Master proxy already running" "debug"
-    return 0
-  fi
+  local proxy_dir="${MASTER_PROXY_DIR:-./master-proxy}"
   
-  # Skip auto-setup if disabled
-  if [ "${MASTER_PROXY_AUTO_SETUP:-true}" != "true" ]; then
-    bgd_log "Master proxy not initialized, but auto-setup is disabled" "warning"
-    return 1
-  fi
-  
-  bgd_log "Initializing master proxy automatically" "info"
-  
-  # Set up directory structure
-  local proxy_dir="${MASTER_PROXY_DIR:-/app/master-proxy}"
-  local registry_file="${proxy_dir}/app-registry.json"
-  local container_name="${MASTER_PROXY_CONTAINER:-bgd-master-proxy}"
-  local proxy_port="${MASTER_PROXY_PORT:-80}"
-  local proxy_ssl_port="${MASTER_PROXY_SSL_PORT:-443}"
-  
-  # Ensure permissions for directory creation
-  if ! bgd_ensure_directory "${proxy_dir}"; then
-    bgd_log "Failed to create master proxy directory: ${proxy_dir}. Check permissions." "error"
-    return 1
-  fi
-  
-  # Check for port conflicts before starting
-  if ! bgd_is_port_available "$proxy_port"; then
-    bgd_log "Port $proxy_port is already in use. Cannot start master proxy." "error"
-    return 1
-  fi
-  
-  if ! bgd_is_port_available "$proxy_ssl_port"; then
-    bgd_log "Port $proxy_ssl_port is already in use. Cannot start master proxy." "error"
-    return 1
-  fi
-  
-  # Ensure directories exist
-  bgd_ensure_directory "${proxy_dir}/certs"
-  bgd_ensure_directory "${proxy_dir}/logs"
-  
-  # Create initial registry if needed
-  if [ ! -f "$registry_file" ]; then
-    echo '{"applications":[]}' > "$registry_file"
-  fi
-  
-  # Create initial configuration
-  cat > "${proxy_dir}/nginx.conf" << EOL
-# Master NGINX configuration
-# Initially created $(date)
-
-worker_processes auto;
-events {
-    worker_connections 1024;
-}
-
-http {
-    include       /etc/nginx/mime.types;
-    default_type  application/octet-stream;
-    
-    sendfile        on;
-    keepalive_timeout  65;
-    
-    access_log  /var/log/nginx/access.log;
-    error_log   /var/log/nginx/error.log;
-    
-    # Default server
-    server {
-        listen ${proxy_port} default_server;
-        listen [::]:${proxy_port} default_server;
-        
-        server_name _;
-        
-        location / {
-            return 404 "No application configured for this domain.\\n";
-        }
-    }
-}
-EOL
-  
-  # Start the container
-  bgd_log "Starting master proxy container" "info"
-  docker stop "$container_name" 2>/dev/null || true
-  docker rm "$container_name" 2>/dev/null || true
-  
-  docker run -d --name "$container_name" \
-    --restart unless-stopped \
-    -p ${proxy_port}:${proxy_port} -p ${proxy_ssl_port}:${proxy_ssl_port} \
-    -v "${proxy_dir}/nginx.conf:/etc/nginx/nginx.conf:ro" \
-    -v "${proxy_dir}/certs:/etc/nginx/certs:ro" \
-    -v "${proxy_dir}/logs:/var/log/nginx" \
-    nginx:stable-alpine
-  
-  local status=$?
-  if [ $status -ne 0 ]; then
-    bgd_log "Failed to start master proxy container" "error"
-    return 1
-  fi
-  
-  bgd_log "Master proxy initialized successfully" "success"
-  return 0
-}
-
-# Register the application with the master proxy
-bgd_register_app_with_master_proxy() {
-  local app_name="$1"
-  local domain_name="$2"
-  local port="$3"
-  local ssl_port="$4"
-  
-  # Validate required parameters
-  if [ -z "$app_name" ] || [ -z "$domain_name" ] || [ -z "$port" ]; then
-    bgd_log "Missing required parameters for master proxy registration" "error"
-    return 1
-  fi
-  
-  if [ "${MASTER_PROXY_ENABLED:-true}" != "true" ]; then
-    bgd_log "Master proxy is disabled, skipping registration" "info"
-    return 0
-  fi
-  
-  # Initialize master proxy if not already running
-  bgd_init_master_proxy || {
-    bgd_log "Failed to initialize master proxy" "error"
-    return 1
-  }
-  
-  bgd_log "Registering application with master proxy: $app_name -> $domain_name" "info"
+  bgd_log "Initializing master proxy in $proxy_dir" "info"
   
   # Ensure master proxy directory exists
-  if [ ! -d "${MASTER_PROXY_DIR}" ]; then
-    mkdir -p "${MASTER_PROXY_DIR}/certs" || {
-      bgd_log "Failed to create master proxy directories" "error"
-      return 1
-    }
-    mkdir -p "${MASTER_PROXY_DIR}/logs" || {
-      bgd_log "Failed to create master proxy log directory" "error" 
-      return 1
-    }
-  fi
+  bgd_ensure_directory "$proxy_dir"
+  bgd_ensure_directory "$proxy_dir/config"
+  bgd_ensure_directory "$proxy_dir/certs"
+  bgd_ensure_directory "$proxy_dir/conf.d"
+  bgd_ensure_directory "$proxy_dir/html"
   
-  # Initialize registry if needed
-  if [ ! -f "${MASTER_PROXY_REGISTRY}" ]; then
-    echo '{"applications":[]}' > "${MASTER_PROXY_REGISTRY}" || {
-      bgd_log "Failed to create master proxy registry" "error"
-      return 1
-    }
-  fi
-  
-  # Update registry
-  if command -v jq &> /dev/null; then
-    local tmp_file=$(mktemp)
-    
-    # Check if app already exists in registry
-    local exists=$(jq --arg name "$app_name" '.applications | map(select(.name == $name)) | length' "${MASTER_PROXY_REGISTRY}")
-    
-    if [ "$exists" -gt 0 ]; then
-      # Update existing entry
-      jq --arg name "$app_name" \
-         --arg domain "$domain_name" \
-         --arg port "$port" \
-         --arg ssl_port "$ssl_port" \
-         '.applications = [.applications[] | if .name == $name then {"name": $name, "domain": $domain, "port": $port, "ssl_port": $ssl_port, "active": true} else . end]' \
-         "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
-        bgd_log "Failed to update master proxy registry" "error"
-        rm -f "$tmp_file"
-        return 1
-      }
-    else
-      # Add new entry
-      jq --arg name "$app_name" \
-         --arg domain "$domain_name" \
-         --arg port "$port" \
-         --arg ssl_port "$ssl_port" \
-         '.applications += [{"name": $name, "domain": $domain, "port": $port, "ssl_port": $ssl_port, "active": true}]' \
-         "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
-        bgd_log "Failed to update master proxy registry" "error"
-        rm -f "$tmp_file"
-        return 1
-      }
-    }
-    
-    # Update the registry file
-    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}" || {
-      bgd_log "Failed to move temp registry to final location" "error"
-      rm -f "$tmp_file"
-      return 1
-    }
-  else
-    bgd_log "jq not found, unable to update master proxy registry" "warning"
-    return 1
-  fi
-  
-  # Generate and update master proxy configuration
-  bgd_update_master_proxy_config || {
-    bgd_log "Failed to update master proxy configuration" "error"
-    return 1
-  }
-  
-  # Link SSL certificates if available
-  if [ -d "certs" ]; then
-    bgd_log "Linking SSL certificates for $app_name" "info"
-    mkdir -p "${MASTER_PROXY_DIR}/certs/$app_name" || {
-      bgd_log "Failed to create certificate directory" "warning"
-    }
-    cp -f certs/* "${MASTER_PROXY_DIR}/certs/$app_name/" 2>/dev/null || {
-      bgd_log "Failed to copy certificates" "warning"
-    }
-  fi
-  
-  return 0
-}
+  # Create default index and error pages
+  cat > "$proxy_dir/html/index.html" << 'EOL'
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Blue/Green Deployment Master Proxy</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+    h1 { color: #336699; }
+    .container { max-width: 800px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Blue/Green Deployment Master Proxy</h1>
+    <p>This is the default page for the master proxy. Configure applications to serve specific domains.</p>
+  </div>
+</body>
+</html>
+EOL
 
-# Unregister an application from the master proxy
-bgd_unregister_app_from_master_proxy() {
-  local app_name="$1"
-  local force="${2:-false}"
-  
-  if [ "${MASTER_PROXY_ENABLED:-true}" != "true" ]; then
-    bgd_log "Master proxy is disabled, skipping unregistration" "info"
-    return 0
-  fi
-  
-  # Check for any running containers for this app
-  if [ "$force" != "true" ]; then
-    # Check if there are any running containers for this app
-    local running_containers=$(docker ps --format "{{.Names}}" | grep "${app_name}" | wc -l)
-    
-    if [ "$running_containers" -gt 0 ]; then
-      bgd_log "Found $running_containers running containers for $app_name, skipping unregistration" "warning"
-      return 0
-    }
-  fi
-  
-  bgd_log "Unregistering application from master proxy: $app_name" "info"
-  
-  # Check if registry exists
-  if [ ! -f "${MASTER_PROXY_REGISTRY}" ]; then
-    bgd_log "Master proxy registry not found, nothing to unregister" "warning"
-    return 0
-  fi
-  
-  # Update registry
-  if command -v jq &> /dev/null; then
-    local tmp_file=$(mktemp)
-    
-    # Mark app as inactive
-    jq --arg name "$app_name" \
-       '.applications = [.applications[] | if .name == $name then .active = false else . end]' \
-       "${MASTER_PROXY_REGISTRY}" > "$tmp_file" || {
-      bgd_log "Failed to update master proxy registry" "error"
-      rm -f "$tmp_file"
-      return 1
-    }
-    
-    # Update the registry file
-    mv "$tmp_file" "${MASTER_PROXY_REGISTRY}" || {
-      bgd_log "Failed to move temp registry to final location" "error"
-      rm -f "$tmp_file"
-      return 1
-    }
-  else
-    bgd_log "jq not found, unable to update master proxy registry" "warning"
-    return 1
-  fi
-  
-  # Update master proxy configuration
-  bgd_update_master_proxy_config || {
-    bgd_log "Failed to update master proxy configuration" "warning"
-  }
-  
-  return 0
-}
+  cat > "$proxy_dir/html/404.html" << 'EOL'
+<!DOCTYPE html>
+<html>
+<head>
+  <title>404 - Not Found</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+    h1 { color: #cc3333; }
+    .container { max-width: 800px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>404 - Not Found</h1>
+    <p>The requested resource could not be found on this server.</p>
+    <p><a href="/">Return to homepage</a></p>
+  </div>
+</body>
+</html>
+EOL
 
-# Generate and update the master proxy configuration
-bgd_update_master_proxy_config() {
-  local nginx_conf="${MASTER_PROXY_DIR}/nginx.conf"
-  
-  bgd_log "Updating master proxy configuration" "info"
-  
-  # Create basic NGINX configuration
-  cat > "$nginx_conf" << EOL
-# Master NGINX configuration for Blue/Green Deployment
-# Automatically generated - DO NOT EDIT MANUALLY
+  cat > "$proxy_dir/html/50x.html" << 'EOL'
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Server Error</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+    h1 { color: #cc3333; }
+    .container { max-width: 800px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Server Error</h1>
+    <p>The server encountered an error and could not complete your request.</p>
+    <p><a href="/">Return to homepage</a></p>
+  </div>
+</body>
+</html>
+EOL
 
+  # Create the main nginx configuration file
+  cat > "$proxy_dir/config/nginx.conf" << 'EOL'
+user nginx;
 worker_processes auto;
+pid /var/run/nginx.pid;
+
 events {
-    worker_connections 1024;
+    worker_connections 4096;
+    multi_accept on;
+    use epoll;
 }
 
 http {
-    include       /etc/nginx/mime.types;
-    default_type  application/octet-stream;
+    # Basic settings
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    server_tokens off;
     
-    sendfile        on;
-    keepalive_timeout  65;
+    # Logging
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for" '
+                    '$request_time $upstream_response_time $host';
     
-    # Access log configuration
-    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                     '\$status \$body_bytes_sent "\$http_referer" '
-                     '"\$http_user_agent" "\$http_x_forwarded_for"';
-                     
-    access_log  /var/log/nginx/access.log  main;
-    error_log   /var/log/nginx/error.log  warn;
+    access_log /var/log/nginx/access.log main buffer=16k;
+    error_log /var/log/nginx/error.log notice;
     
-    # Gzip compression
-    gzip  on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+    # Optimized file delivery
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
     
-    # Default server for unmatched hosts
+    # Security settings
+    client_max_body_size 50M;
+    client_body_buffer_size 128k;
+    
+    # Timeouts
+    client_body_timeout 15s;
+    client_header_timeout 15s;
+    send_timeout 15s;
+    
+    # TLS settings
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+    
+    # OCSP settings
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+    
+    # Load application-specific configurations
+    include /etc/nginx/conf.d/*.conf;
+    
+    # Default server - catches requests that don't match any server_name
     server {
         listen 80 default_server;
         listen [::]:80 default_server;
+        listen 443 ssl default_server;
+        listen [::]:443 ssl default_server;
         
         server_name _;
         
-        location / {
-            return 404 "No application configured for this domain.\\n";
+        # Default SSL certificates
+        ssl_certificate /etc/nginx/certs/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/privkey.pem;
+        
+        # Security headers
+        add_header X-Content-Type-Options nosniff;
+        add_header X-Frame-Options SAMEORIGIN;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header Referrer-Policy strict-origin-when-cross-origin;
+        
+        # Default pages
+        root /usr/share/nginx/html;
+        
+        location = /404.html {
+            internal;
         }
+        
+        location = /50x.html {
+            internal;
+        }
+        
+        location / {
+            try_files $uri $uri/ =404;
+        }
+        
+        # Deny access to hidden files
+        location ~ /\. {
+            deny all;
+            return 404;
+        }
+        
+        # Error pages
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
     }
+}
+EOL
+
+  # Create docker-compose.yml for the master proxy
+  cat > "$proxy_dir/docker-compose.yml" << 'EOL'
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    container_name: ${MASTER_PROXY_NAME}
+    restart: unless-stopped
+    ports:
+      - "${MASTER_PROXY_PORT}:80"
+      - "${MASTER_PROXY_SSL_PORT}:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./conf.d:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ./html:/usr/share/nginx/html:ro
+      - ./logs:/var/log/nginx
+    networks:
+      - master-proxy-network
+      - proxy-apps-network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  certbot:
+    image: certbot/certbot
+    container_name: ${MASTER_PROXY_NAME}-certbot
+    restart: unless-stopped
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./html:/var/www/html
+    depends_on:
+      - nginx
+    entrypoint: /bin/sh -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/html --quiet; sleep 12h & wait $${!}; done"
+    networks:
+      - master-proxy-network
+
+networks:
+  master-proxy-network:
+    name: ${MASTER_PROXY_NAME}-network
+  proxy-apps-network:
+    name: ${MASTER_PROXY_NAME}-apps-network
+    external: true
+EOL
+
+  # Create environment file
+  cat > "$proxy_dir/.env" << EOL
+MASTER_PROXY_NAME=${MASTER_PROXY_NAME:-bgd-master-proxy}
+MASTER_PROXY_PORT=${MASTER_PROXY_PORT:-80}
+MASTER_PROXY_SSL_PORT=${MASTER_PROXY_SSL_PORT:-443}
 EOL
   
-  # Add server blocks for each active application
-  if [ -f "${MASTER_PROXY_REGISTRY}" ] && command -v jq &> /dev/null; then
-    # Get active applications
-    local active_apps=$(jq -c '.applications[] | select(.active == true)' "${MASTER_PROXY_REGISTRY}")
+  # Copy default SSL certificates if available, or create self-signed ones
+  if [ -f "${SSL_CERT_PATH:-./certs}/fullchain.pem" ] && [ -f "${SSL_CERT_PATH:-./certs}/privkey.pem" ]; then
+    bgd_log "Copying existing SSL certificates for master proxy" "info"
+    cp "${SSL_CERT_PATH:-./certs}/fullchain.pem" "$proxy_dir/certs/"
+    cp "${SSL_CERT_PATH:-./certs}/privkey.pem" "$proxy_dir/certs/"
+  else
+    bgd_log "Generating self-signed certificate for master proxy" "info"
     
-    # Process each application
-    echo "$active_apps" | while read -r app; do
-      local name=$(echo "$app" | jq -r '.name')
-      local domain=$(echo "$app" | jq -r '.domain')
-      local port=$(echo "$app" | jq -r '.port')
-      local ssl_port=$(echo "$app" | jq -r '.ssl_port')
-      local has_ssl=false
+    # Check if openssl is available
+    if command -v openssl &> /dev/null; then
+      openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout "$proxy_dir/certs/privkey.pem" \
+        -out "$proxy_dir/certs/fullchain.pem" \
+        -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost" \
+        2>/dev/null
       
-      # Check if SSL certificates exist
-      if [ -f "${MASTER_PROXY_DIR}/certs/$name/fullchain.pem" ] && [ -f "${MASTER_PROXY_DIR}/certs/$name/privkey.pem" ]; then
-        has_ssl=true
-      fi
+      chmod 600 "$proxy_dir/certs/privkey.pem"
+    else
+      bgd_log "OpenSSL not found, skipping self-signed certificate generation" "warning"
       
-      # Add HTTP server block
-      cat >> "$nginx_conf" << EOL
+      # Create empty files so Docker doesn't complain
+      touch "$proxy_dir/certs/fullchain.pem"
+      touch "$proxy_dir/certs/privkey.pem"
+    fi
+  fi
+  
+  # Create default application configuration
+  if [ -n "${DEFAULT_APP:-}" ]; then
+    bgd_log "Configuring default app: $DEFAULT_APP" "info"
+    bgd_register_app_with_master_proxy "$DEFAULT_APP" "localhost" "default"
+  fi
+  
+  bgd_log "Master proxy initialized at $proxy_dir" "success"
+  return 0
+}
+
+# Register an application with the master proxy
+bgd_register_app_with_master_proxy() {
+  local app_name="$1"
+  local domain_name="$2"
+  local is_default="${3:-false}"
+  
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  local proxy_dir="${MASTER_PROXY_DIR:-./master-proxy}"
+  local active_env=""
+  local backend_port=""
+  
+  bgd_log "Registering $app_name with domain $domain_name to master proxy" "info"
+  
+  # Determine active environment and port
+  read active_env inactive_env <<< $(bgd_get_environments)
+  
+  if [ "$active_env" = "blue" ]; then
+    backend_port="${BLUE_PORT:-8081}"
+  elif [ "$active_env" = "green" ]; then
+    backend_port="${GREEN_PORT:-8082}"
+  else
+    backend_port="${DEFAULT_PORT:-3000}"
+  fi
+  
+  # Create configuration file
+  local conf_file="$proxy_dir/conf.d/${app_name}.conf"
+  local default_server=""
+  
+  # Add default_server if this is the default application
+  if [ "$is_default" = "default" ]; then
+    default_server=" default_server"
+  fi
+  
+  # Create conf.d directory if it doesn't exist
+  bgd_ensure_directory "$proxy_dir/conf.d"
+  
+  # Generate the configuration
+  cat > "$conf_file" << EOL
+# Application: $app_name
+# Domain: $domain_name
+# Generated: $(date)
+
+server {
+    listen 80$default_server;
+    listen [::]:80$default_server;
     
-    # HTTP server for $name ($domain)
-    server {
-        listen 80;
-        listen [::]:80;
-        server_name $domain;
-EOL
-      
-      # Add SSL redirect if certificates are available
-      if [ "$has_ssl" = true ]; then
-        cat >> "$nginx_conf" << EOL
-        
-        # Redirect to HTTPS
+    server_name $domain_name;
+    
+    # Redirect to HTTPS if certificates exist
+    if (\$scheme = http) {
         return 301 https://\$host\$request_uri;
     }
-    
-    # HTTPS server for $name ($domain)
-    server {
-        listen 443 ssl http2;
-        listen [::]:443 ssl http2;
-        server_name $domain;
-        
-        # SSL Configuration
-        ssl_certificate /etc/nginx/certs/$name/fullchain.pem;
-        ssl_certificate_key /etc/nginx/certs/$name/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_prefer_server_ciphers on;
-        ssl_ciphers EECDH+AESGCM:EDH+AESGCM;
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 1d;
-        
-        # Proxy settings
-        location / {
-            proxy_pass http://localhost:$ssl_port;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-        }
-EOL
-      else
-        # Just HTTP proxy
-        cat >> "$nginx_conf" << EOL
-        
-        # Proxy settings
-        location / {
-            proxy_pass http://localhost:$port;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-        }
-EOL
-      fi
-      
-      # Close the server block
-      cat >> "$nginx_conf" << EOL
-    }
-EOL
-    done
-  fi
-  
-  # Close the http block
-  cat >> "$nginx_conf" << EOL
-}
-EOL
-  
-  # Start or reload the master proxy
-  bgd_start_or_reload_master_proxy
-  
-  return 0
 }
 
-# Start or reload the master proxy
-bgd_start_or_reload_master_proxy() {
-  local container_name="${MASTER_PROXY_CONTAINER:-bgd-master-proxy}"
+server {
+    listen 443 ssl http2$default_server;
+    listen [::]:443 ssl http2$default_server;
+    
+    server_name $domain_name;
+    
+    # SSL configuration
+    ssl_certificate /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    
+    # Security headers
+    add_header X-Content-Type-Options nosniff;
+    add_header X-Frame-Options SAMEORIGIN;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header Referrer-Policy strict-origin-when-cross-origin;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    
+    # Proxy to backend application
+    location / {
+        proxy_pass http://${app_name}-${active_env}:$backend_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_cache_bypass \$http_upgrade;
+        
+        # Timeouts
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+    
+    # Deny access to hidden files
+    location ~ /\. {
+        deny all;
+        return 404;
+    }
+    
+    # Error pages
+    error_page 404 /404.html;
+    error_page 500 502 503 504 /50x.html;
+}
+EOL
   
-  # Check if container is running
-  if docker ps -q --filter "name=$container_name" | grep -q .; then
+  bgd_log "Application $app_name registered with master proxy" "success"
+  
+  # Reload master proxy if running
+  if docker ps | grep -q "${MASTER_PROXY_NAME:-bgd-master-proxy}"; then
     bgd_log "Reloading master proxy configuration" "info"
-    docker exec "$container_name" nginx -s reload || {
-      bgd_log "Failed to reload, restarting master proxy container" "warning"
-      docker restart "$container_name"
-    }
-  else
-    bgd_log "Starting master proxy container" "info"
-    
-    # Remove container if it exists but is not running
-    docker rm -f "$container_name" 2>/dev/null || true
-    
-    # Start container
-    docker run -d --name "$container_name" \
-      --restart unless-stopped \
-      -p 80:80 -p 443:443 \
-      -v "${MASTER_PROXY_DIR}/nginx.conf:/etc/nginx/nginx.conf:ro" \
-      -v "${MASTER_PROXY_DIR}/certs:/etc/nginx/certs:ro" \
-      -v "${MASTER_PROXY_DIR}/logs:/var/log/nginx" \
-      nginx:stable-alpine || {
-      bgd_log "Failed to start master proxy container" "error"
-      return 1
+    docker exec "${MASTER_PROXY_NAME:-bgd-master-proxy}" nginx -s reload || {
+      bgd_log "Failed to reload master proxy, trying restart" "warning"
+      docker restart "${MASTER_PROXY_NAME:-bgd-master-proxy}" || {
+        bgd_log "Failed to restart master proxy" "error"
+        return 1
+      }
     }
   fi
   
   return 0
 }
 
-# Hook: Check and initialize master proxy at start of deployment
+# Start master proxy
+bgd_start_master_proxy() {
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  local proxy_dir="${MASTER_PROXY_DIR:-./master-proxy}"
+  
+  bgd_log "Starting master proxy..." "info"
+  
+  # Check if master proxy is initialized
+  if [ ! -f "$proxy_dir/docker-compose.yml" ]; then
+    bgd_log "Master proxy not initialized, initializing now" "info"
+    bgd_init_master_proxy
+  fi
+  
+  # Check if the proxy is already running
+  if docker ps | grep -q "${MASTER_PROXY_NAME:-bgd-master-proxy}"; then
+    bgd_log "Master proxy is already running" "info"
+    return 0
+  fi
+  
+  # Start the master proxy
+  (
+    cd "$proxy_dir" || return 1
+    docker-compose up -d
+  ) || {
+    bgd_log "Failed to start master proxy" "error"
+    return 1
+  }
+  
+  bgd_log "Master proxy started successfully" "success"
+  return 0
+}
+
+# Stop master proxy
+bgd_stop_master_proxy() {
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  local proxy_dir="${MASTER_PROXY_DIR:-./master-proxy}"
+  
+  bgd_log "Stopping master proxy..." "info"
+  
+  # Check if the proxy is running
+  if ! docker ps | grep -q "${MASTER_PROXY_NAME:-bgd-master-proxy}"; then
+    bgd_log "Master proxy is not running" "info"
+    return 0
+  fi
+  
+  # Stop the master proxy
+  (
+    cd "$proxy_dir" || return 1
+    docker-compose down
+  ) || {
+    bgd_log "Failed to stop master proxy" "error"
+    return 1
+  }
+  
+  bgd_log "Master proxy stopped successfully" "success"
+  return 0
+}
+
+# Update application in master proxy after deployment
+bgd_update_proxy_for_app() {
+  local app_name="$1"
+  local domain_name="${DOMAIN_NAME:-localhost}"
+  
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ] || [ "${AUTO_REGISTER:-true}" != "true" ]; then
+    return 0
+  fi
+  
+  bgd_register_app_with_master_proxy "$app_name" "$domain_name"
+  return $?
+}
+
+# Update proxy after cutover to reflect new active environment
+bgd_update_proxy_after_cutover() {
+  local app_name="$1"
+  local target_env="$2"
+  local domain_name="${DOMAIN_NAME:-localhost}"
+  
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  bgd_log "Updating master proxy after cutover to $target_env" "info"
+  bgd_register_app_with_master_proxy "$app_name" "$domain_name"
+  
+  return $?
+}
+
+# Request Let's Encrypt certificate for a domain
+bgd_request_letsencrypt_cert() {
+  local domain="$1"
+  local email="${LETSENCRYPT_EMAIL:-}"
+  
+  if [ "${MASTER_PROXY_ENABLED:-false}" != "true" ]; then
+    return 0
+  fi
+  
+  if [ -z "$email" ]; then
+    bgd_log "LETSENCRYPT_EMAIL is required for certificate requests" "error"
+    return 1
+  fi
+  
+  bgd_log "Requesting Let's Encrypt certificate for $domain" "info"
+  
+  local proxy_dir="${MASTER_PROXY_DIR:-./master-proxy}"
+  local certbot_container="${MASTER_PROXY_NAME:-bgd-master-proxy}-certbot"
+  
+  # Check if certbot container is running
+  if ! docker ps | grep -q "$certbot_container"; then
+    bgd_log "Certbot container not running, starting master proxy first" "info"
+    bgd_start_master_proxy
+  fi
+  
+  # Run certbot
+  docker exec "$certbot_container" certbot certonly --webroot \
+    -w /var/www/html \
+    -d "$domain" \
+    --email "$email" \
+    --agree-tos \
+    --non-interactive \
+    --expand
+  
+  local status=$?
+  if [ $status -eq 0 ]; then
+    bgd_log "Successfully obtained SSL certificate for $domain" "success"
+    
+    # Copy certificates to the right location
+    docker exec "$certbot_container" cp /etc/letsencrypt/live/$domain/fullchain.pem /etc/letsencrypt/fullchain.pem
+    docker exec "$certbot_container" cp /etc/letsencrypt/live/$domain/privkey.pem /etc/letsencrypt/privkey.pem
+    
+    # Reload nginx
+    docker exec "${MASTER_PROXY_NAME:-bgd-master-proxy}" nginx -s reload
+  else
+    bgd_log "Failed to obtain SSL certificate for $domain" "error"
+  fi
+  
+  return $status
+}
+
+# Plugin hooks
 bgd_hook_pre_deploy() {
   local version="$1"
   local app_name="$2"
   
-  # Initialize master proxy early to avoid surprises later
-  if [ "${MASTER_PROXY_ENABLED:-true}" = "true" ] && [ "${MASTER_PROXY_AUTO_SETUP:-true}" = "true" ]; then
-    bgd_init_master_proxy || {
-      bgd_log "Warning: Master proxy initialization failed during pre-deploy" "warning"
-      # Continue deployment despite warning - will try again during post-deploy
-    }
+  # Ensure master proxy is initialized and running
+  if [ "${MASTER_PROXY_ENABLED:-false}" = "true" ]; then
+    bgd_init_master_proxy
+    bgd_start_master_proxy
   fi
   
   return 0
 }
 
-# Hook: Register with master proxy after deployment is complete
 bgd_hook_post_deploy() {
   local version="$1"
   local env_name="$2"
   
-  # Only register if we have domain name and active environment
-  if [ -n "${DOMAIN_NAME:-}" ] && [ "$env_name" = "$TARGET_ENV" ]; then
-    bgd_register_app_with_master_proxy "$APP_NAME" "$DOMAIN_NAME" "$NGINX_PORT" "$NGINX_SSL_PORT"
+  # Register app with master proxy if applicable
+  if [ "${MASTER_PROXY_ENABLED:-false}" = "true" ] && [ "${AUTO_REGISTER:-true}" = "true" ]; then
+    bgd_update_proxy_for_app "${APP_NAME}"
   fi
   
   return 0
 }
 
-# Hook: Update registration after cutover
 bgd_hook_post_cutover() {
   local target_env="$1"
   
-  # Update registration after cutover
-  if [ -n "${DOMAIN_NAME:-}" ]; then
-    bgd_register_app_with_master_proxy "$APP_NAME" "$DOMAIN_NAME" "$NGINX_PORT" "$NGINX_SSL_PORT"
+  # Update proxy configuration after cutover
+  if [ "${MASTER_PROXY_ENABLED:-false}" = "true" ]; then
+    bgd_update_proxy_after_cutover "${APP_NAME}" "$target_env"
   fi
-  
-  return 0
-}
-
-# Hook: Update registration after rollback
-bgd_hook_post_rollback() {
-  local rollback_env="$1"
-  
-  # Update registration after rollback
-  if [ -n "${DOMAIN_NAME:-}" ]; then
-    bgd_register_app_with_master_proxy "$APP_NAME" "$DOMAIN_NAME" "$NGINX_PORT" "$NGINX_SSL_PORT"
-  fi
-  
-  return 0
-}
-
-# Hook: For cleanup - only unregister if there are no active deployments
-bgd_hook_cleanup() {
-  local app_name="$1"
-  local force="${2:-false}"
-  
-  # Unregister app during cleanup, but check for active deployments first
-  bgd_unregister_app_from_master_proxy "$app_name" "$force"
   
   return 0
 }

@@ -1,12 +1,9 @@
 #!/bin/bash
 #
-# bgd-rollback.sh - Rolls back to the previous environment
+# bgd-rollback.sh - Rollback utility for Blue/Green Deployment
 #
-# Usage:
-#   ./bgd-rollback.sh [OPTIONS]
-#
-# Options:
-#   --app-name=NAME         Application name (REQUIRED)
+# This script provides rollback functionality for applications deployed with the BGD system,
+# allowing quick recovery from failed deployments.
 
 set -euo pipefail
 
@@ -24,145 +21,212 @@ Blue/Green Deployment System - Rollback Script
 USAGE:
   ./bgd-rollback.sh [OPTIONS]
 
-REQUIRED OPTIONS:
-  --app-name=NAME           Application name
-
-PROFILE OPTIONS:
-  --profile=NAME            Specify Docker Compose profile to use (default: env name)
-  --services=LIST           Comma-separated list of services to start during rollback
-
-ROUTING OPTIONS:
-  --paths=LIST              Path:service:port mappings (comma-separated)
-                           Example: "api:backend:3000,dashboard:frontend:80"
-  --subdomains=LIST         Subdomain:service:port mappings (comma-separated)
-                           Example: "api:backend:3000,team:frontend:80"
-  --domain-name=DOMAIN      Domain name for routing
-  --domain-aliases=LIST     Additional domain aliases (comma-separated)
-
-CONFIGURATION OPTIONS:
-  --nginx-port=PORT         Nginx external port (default: 80)
-  --nginx-ssl-port=PORT     Nginx HTTPS port (default: 443)
-  --blue-port=PORT          Blue environment port (default: 8081)
-  --green-port=PORT         Green environment port (default: 8082)
-
-HEALTH CHECK OPTIONS:
-  --health-endpoint=PATH    Health check endpoint (default: /health)
-  --health-retries=N        Number of health check retries (default: 12)
-  --health-delay=SEC        Delay between health checks (default: 5)
-
-ADVANCED OPTIONS:
-  --force                   Force rollback even if environment is unhealthy
-  --notify-enabled          Enable notifications
+OPTIONS:
+  --app-name=NAME      Application name
+  --force              Force rollback even if inactive environment is unhealthy
+  --clean              Clean up the rolled back environment after rollback
+  --db-rollback        Roll back database migrations (if applicable)
+  --skip-health-check  Skip health check of inactive environment
+  --help               Show this help message
 
 EXAMPLES:
-  # Standard rollback
+  # Rollback myapp to the inactive environment
   ./bgd-rollback.sh --app-name=myapp
 
-  # Rollback with specific profile and services
-  ./bgd-rollback.sh --app-name=myapp --profile=blue --services=app,api
+  # Force rollback without health checks
+  ./bgd-rollback.sh --app-name=myapp --force --skip-health-check
 
 =================================================================
 EOL
 }
 
-# Main rollback function
-bgd_rollback() {
-  # Check for help flag first
-  if [[ "$1" == "--help" ]]; then
-    bgd_show_help
-    return 0
-  fi
-
-  # Parse command-line parameters
-  bgd_parse_parameters "$@"
+# Perform rollback operation
+bgd_perform_rollback() {
+  local app_name="$1"
+  local force="${2:-false}"
+  local db_rollback="${3:-false}"
+  local skip_health="${4:-false}"
   
-  # Additional validation for required parameters
-  if [ -z "${APP_NAME:-}" ]; then
-    bgd_handle_error "missing_parameter" "APP_NAME"
-    return 1
-  fi
-
-  bgd_log "Starting rollback procedure for $APP_NAME" "info"
-
-  # Determine which environment is currently active and which is standby
-  read ACTIVE_ENV ROLLBACK_ENV <<< $(bgd_get_environments)
-
-  DOCKER_COMPOSE=$(bgd_get_docker_compose_cmd)
-
-  # Check if the rollback environment exists
-  if ! [ -f ".env.${ROLLBACK_ENV}" ]; then
-    bgd_handle_error "file_not_found" "Rollback environment configuration not found (.env.${ROLLBACK_ENV})"
-    return 1
-  fi
-
-  bgd_log "Active environment: $ACTIVE_ENV, rolling back to: $ROLLBACK_ENV" "info"
-
-  # Check if rollback environment is up; if not, start it
-  if ! docker ps | grep -q "${APP_NAME}-${ROLLBACK_ENV}"; then
-    # Get deployment command for the rollback environment
-    local deploy_cmd=$(bgd_get_deployment_cmd "$ROLLBACK_ENV" ".env.${ROLLBACK_ENV}" "$PROFILE" "$additional_profiles")
+  bgd_log "Starting rollback process for $app_name" "info"
+  
+  # Load plugins required for rollback
+  bgd_load_plugins
+  
+  # Get current active/inactive environments
+  read active_env inactive_env <<< $(bgd_get_environments)
+  
+  bgd_log "Current active environment: $active_env" "info"
+  bgd_log "Rolling back to: $inactive_env" "info"
+  
+  # Check if inactive environment is healthy
+  if [ "$skip_health" != "true" ]; then
+    bgd_log "Performing health check on $inactive_env environment" "info"
     
-    bgd_log "Starting rollback environment ($ROLLBACK_ENV)" "info"
-    
-    # Start the environment with profiles or services
-    if [ -n "${SERVICES:-}" ]; then
-      # Convert comma-separated to space-separated for Docker Compose
-      local service_args=$(echo "$SERVICES" | tr ',' ' ')
-      eval "$deploy_cmd up -d $service_args" || 
-        bgd_handle_error "environment_start_failed" "Failed to start rollback environment"
+    if ! bgd_check_environment_health "$inactive_env" "$app_name"; then
+      if [ "$force" != "true" ]; then
+        bgd_log "Inactive environment ($inactive_env) is unhealthy. Use --force to roll back anyway." "error"
+        return 1
+      else
+        bgd_log "Inactive environment ($inactive_env) is unhealthy, but proceeding with rollback due to --force flag" "warning"
+      fi
     else
-      eval "$deploy_cmd up -d" || 
-        bgd_handle_error "environment_start_failed" "Failed to start rollback environment"
+      bgd_log "Inactive environment ($inactive_env) is healthy, proceeding with rollback" "success"
+    fi
+  else
+    bgd_log "Skipping health check as requested" "warning"
+  fi
+  
+  # Call pre-rollback hooks if available
+  if declare -F bgd_hook_pre_rollback >/dev/null; then
+    bgd_hook_pre_rollback "$inactive_env"
+  fi
+  
+  # Roll back database if requested
+  if [ "$db_rollback" = "true" ]; then
+    bgd_log "Rolling back database migrations" "info"
+    
+    # Check if DB migrations plugin is available and source it
+    local db_plugin="${BGD_PLUGINS_DIR}/bgd-db-migrations.sh"
+    if [ -f "$db_plugin" ]; then
+      source "$db_plugin"
+      
+      # Use the rollback function if available
+      if declare -f bgd_rollback_migrations >/dev/null; then
+        if ! bgd_rollback_migrations "$inactive_env" "$app_name"; then
+          bgd_log "Database rollback failed, but continuing with environment rollback" "warning"
+        fi
+      else
+        bgd_log "Database rollback function not available" "warning"
+      fi
+    else
+      bgd_log "Database migrations plugin not found, skipping database rollback" "warning"
     fi
   fi
-
-  # Check health of rollback environment
-  ROLLBACK_PORT=$([[ "$ROLLBACK_ENV" == "blue" ]] && echo "$BLUE_PORT" || echo "$GREEN_PORT")
-  HEALTH_URL="http://localhost:${ROLLBACK_PORT}${HEALTH_ENDPOINT}"
-
-  if ! bgd_check_health "$HEALTH_URL" "$HEALTH_RETRIES" "$HEALTH_DELAY"; then
-    if [ "${FORCE:-false}" = "true" ]; then
-      bgd_log "Rollback environment is NOT healthy, but --force was specified. Proceeding anyway." "warning"
-    else
-      bgd_handle_error "health_check_failed" "Rollback environment is NOT healthy"
+  
+  # Perform the rollback by directing traffic to inactive environment
+  bgd_log "Updating Nginx configuration to point to $inactive_env environment" "info"
+  
+  # Generate Nginx configuration for single environment
+  if ! bgd_create_single_env_nginx_conf "$inactive_env"; then
+    bgd_log "Failed to create Nginx configuration" "error"
+    return 1
+  fi
+  
+  # Apply the new Nginx configuration
+  local docker_compose=$(bgd_get_docker_compose_cmd)
+  
+  # Restart Nginx container to apply new configuration
+  local nginx_container="${app_name}-${active_env}-nginx"
+  if docker ps -q --filter "name=$nginx_container" | grep -q .; then
+    docker restart "$nginx_container" || {
+      bgd_log "Failed to restart Nginx container" "error"
       return 1
-    fi
-  fi
-
-  # Update nginx to route traffic to rollback environment
-  bgd_log "Updating nginx to route traffic to $ROLLBACK_ENV environment" "info"
-
-  # Use single-env template for direct routing 
-  bgd_create_single_env_nginx_conf "$ROLLBACK_ENV"
-
-  # Apply Nginx configuration
-  local active_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${ACTIVE_ENV}-nginx" | head -n1)
-  if [ -n "$active_nginx" ]; then
-    # Reload configuration on active nginx
-    bgd_log "Reloading nginx on $ACTIVE_ENV" "info"
-    docker cp nginx.conf "$active_nginx:/etc/nginx/nginx.conf"
-    docker exec "$active_nginx" nginx -s reload
+    }
+  else
+    bgd_log "Nginx container not found, trying to use docker-compose" "warning"
+    
+    # Try to restart with docker-compose
+    $docker_compose -p "${app_name}-${active_env}" restart nginx || {
+      bgd_log "Failed to restart Nginx with docker-compose" "error"
+      return 1
+    }
   fi
   
-  local rollback_nginx=$(docker ps --format "{{.Names}}" | grep "${APP_NAME}-${ROLLBACK_ENV}-nginx" | head -n1)
-  if [ -n "$rollback_nginx" ]; then
-    # Also ensure rollback environment nginx has the config
-    bgd_log "Updating nginx on $ROLLBACK_ENV" "info"
-    docker cp nginx.conf "$rollback_nginx:/etc/nginx/nginx.conf"
-    docker exec "$rollback_nginx" nginx -s reload
+  # Call post-rollback hooks if available
+  if declare -F bgd_hook_post_rollback >/dev/null; then
+    bgd_hook_post_rollback "$inactive_env"
   fi
-
-  # Send notification if enabled
-  if [ "${NOTIFY_ENABLED:-false}" = "true" ]; then
-    bgd_send_notification "Rollback to $ROLLBACK_ENV environment completed" "warning"
-  fi
-
-  bgd_log "Rollback completed successfully! All traffic is now routed to the $ROLLBACK_ENV environment." "success"
+  
+  # Update environment markers
+  bgd_update_environment_markers "$inactive_env"
+  
+  bgd_log "Rollback to $inactive_env environment completed successfully" "success"
+  
+  # Log rollback event
+  bgd_log_deployment_event "${VERSION:-unknown}" "rollback" "Rolled back to $inactive_env environment"
+  
   return 0
 }
 
-# If this script is being executed directly (not sourced)
+# Update environment markers to reflect new active environment
+bgd_update_environment_markers() {
+  local new_active="$1"
+  
+  # Determine new inactive environment
+  local new_inactive=$([ "$new_active" = "blue" ] && echo "green" || echo "blue")
+  
+  # Update environment markers
+  echo "$new_active" > .bgd-active-env
+  echo "$new_inactive" > .bgd-inactive-env
+  
+  bgd_log "Updated environment markers: active=$new_active, inactive=$new_inactive" "info"
+}
+
+# Clean up rolled back environment
+bgd_cleanup_after_rollback() {
+  local app_name="$1"
+  
+  read active_env inactive_env <<< $(bgd_get_environments)
+  
+  bgd_log "Cleaning up previous active environment ($inactive_env) after rollback" "info"
+  
+  # Use cleanup script if available
+  local cleanup_script="${BGD_SCRIPT_DIR}/bgd-cleanup.sh"
+  
+  if [ -f "$cleanup_script" ] && [ -x "$cleanup_script" ]; then
+    "$cleanup_script" --app-name="$app_name" --environment="$inactive_env" || {
+      bgd_log "Failed to clean up environment $inactive_env" "warning"
+      return 1
+    }
+  else
+    bgd_log "Cleanup script not found: $cleanup_script" "warning"
+    return 1
+  fi
+  
+  bgd_log "Cleanup completed successfully" "success"
+  return 0
+}
+
+# Main function
+bgd_main() {
+  # Parse command line arguments
+  bgd_parse_parameters "$@"
+  
+  # Show help if requested
+  if [ "${HELP:-false}" = "true" ]; then
+    bgd_show_help
+    exit 0
+  fi
+  
+  # Validate required parameters
+  if [ -z "${APP_NAME:-}" ]; then
+    bgd_log "Missing required parameter: APP_NAME" "error"
+    bgd_show_help
+    exit 1
+  fi
+  
+  # Set defaults for optional parameters
+  FORCE="${FORCE:-false}"
+  DB_ROLLBACK="${DB_ROLLBACK:-false}"
+  SKIP_HEALTH_CHECK="${SKIP_HEALTH_CHECK:-false}"
+  CLEAN="${CLEAN:-false}"
+  
+  # Perform rollback
+  if bgd_perform_rollback "$APP_NAME" "$FORCE" "$DB_ROLLBACK" "$SKIP_HEALTH_CHECK"; then
+    # Clean up if requested
+    if [ "$CLEAN" = "true" ]; then
+      bgd_cleanup_after_rollback "$APP_NAME"
+    fi
+    
+    bgd_log "Rollback process completed successfully" "success"
+    exit 0
+  else
+    bgd_log "Rollback process failed" "error"
+    exit 1
+  fi
+}
+
+# Execute main function if script is being run directly
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  bgd_rollback "$@"
-  exit $?
+  bgd_main "$@"
 fi

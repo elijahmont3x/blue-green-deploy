@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  app:
+    image: ${IMAGE}
+    container_name: ${APP_NAME}-${ENV_NAME}-app
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - PORT=${PORT:-3000}
+      - VERSION=${VERSION:-latest}
+      - ENV_NAME=${ENV_NAME}
+    labels:
+      com.bgd.app: "${APP_NAME}"
+      com.bgd.env: "${ENV_NAME}"
+      com.bgd.version: "${VERSION:-latest}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3000}${HEALTH_ENDPOINT:-/health}"]
+      interval: 10s
+      timeout: 5s
+      retries: ${HEALTH_RETRIES:-12}
+      start_period: 15s
+    volumes:
+      - app-data:/app/data
+    networks:
+      - ${ENV_NAME}-network
+
+  nginx:
+    image: nginx:stable-alpine
+    container_name: ${APP_NAME}-${ENV_NAME}-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_SSL_PORT:-443}:443"
+    depends_on:
+      - app
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx:/etc/nginx:ro
+      - ./certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - ${ENV_NAME}-network
+      - ${MASTER_NETWORK:-bgd-network}
+
+networks:
+  ${ENV_NAME}-network:
+    name: ${APP_NAME}-${ENV_NAME}-network
+  ${MASTER_NETWORK:-bgd-network}:
+    external: ${USE_EXTERNAL_NETWORK:-false}
+
+volumes:
+  app-data:
+    name: ${APP_NAME}-${ENV_NAME}-data

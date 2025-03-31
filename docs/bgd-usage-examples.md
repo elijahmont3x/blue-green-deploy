@@ -1,465 +1,260 @@
-# Blue/Green Deployment System Usage Examples
+# Blue/Green Deployment System - Usage Examples
 
-This document provides practical examples of how to use the Blue/Green Deployment System in various scenarios.
+This document contains practical examples of using the Blue/Green Deployment (BGD) system for various deployment scenarios.
 
 ## Table of Contents
 
 - [Basic Deployment](#basic-deployment)
-- [Multi-Container Deployment](#multi-container-deployment)
-- [Using the Database Migrations Plugin](#using-the-database-migrations-plugin)
-- [Using the Service Discovery Plugin](#using-the-service-discovery-plugin)
-- [Using the SSL Automation Plugin](#using-the-ssl-automation-plugin)
-- [Using the Notification Plugin](#using-the-notification-plugin)
-- [Advanced Scenarios](#advanced-scenarios)
-  - [Full Multi-Environment Setup](#full-multi-environment-setup)
-  - [Hybrid Frontend/Backend Deployment](#hybrid-frontendbackend-deployment)
-  - [Multiple Independent Applications](#multiple-independent-applications)
+- [Deployment with Cutover](#deployment-with-cutover)
+- [Gradual Traffic Shifting](#gradual-traffic-shifting)
+- [Using SSL Certificates](#using-ssl-certificates)
+- [Working with Databases](#working-with-databases)
+- [Multi-App Deployment](#multi-app-deployment)
+- [CI/CD Integration](#cicd-integration)
+- [Rollback Operations](#rollback-operations)
+- [Environment Cleanup](#environment-cleanup)
+- [Health Checks](#health-checks)
 
 ## Basic Deployment
 
-This example shows a basic deployment of a simple application:
+The simplest way to deploy an application using the BGD system:
 
 ```bash
-# Initial deployment
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health
-
-# For subsequent deployments
-./scripts/bgd-deploy.sh v1.0.1 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health
-
-# Complete the cutover to the new version
-./scripts/bgd-cutover.sh green --app-name=myapp
+# Deploy version 1.0.0 to the inactive environment (auto-selected)
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
 ```
 
-### GitHub Actions Workflow
+This will:
+1. Automatically select the inactive environment (blue or green)
+2. Deploy the application from the specified image repository
+3. Not switch traffic to the new deployment
+
+## Deployment with Cutover
+
+To deploy and automatically cut over traffic to the new version:
+
+```bash
+# Deploy and cut over
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp --cutover
+```
+
+By adding the `--cutover` flag, the system will:
+1. Deploy to the inactive environment
+2. Run health checks to ensure the deployment is healthy
+3. Cut over traffic to the new environment if health checks pass
+
+## Gradual Traffic Shifting
+
+For critical applications, you may want to gradually shift traffic:
+
+```bash
+# Deploy to inactive environment
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp
+
+# Gradually shift traffic (10% increments, 30 second intervals)
+./scripts/bgd-cutover.sh --app-name=myapp --target=green --gradual --step=10 --interval=30
+```
+
+This will:
+1. Begin with 10% of traffic to new environment
+2. Increase by 10% every 30 seconds
+3. Finally cut over completely when reaching 100%
+
+## Using SSL Certificates
+
+To deploy an application with SSL:
+
+```bash
+# First, initialize SSL with Let's Encrypt
+./scripts/bgd-init.sh --ssl=myapp.example.com --email=admin@example.com
+
+# Deploy with SSL enabled
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --domain-name=myapp.example.com --ssl-enabled
+```
+
+This will:
+1. Generate/renew SSL certificates for your domain
+2. Configure Nginx to use HTTPS
+3. Set up automatic renewal
+
+## Working with Databases
+
+For applications with database migrations:
+
+```bash
+# Deploy with database migrations
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --db-migrations
+```
+
+With the `--db-migrations` flag, the system will:
+1. Deploy to the inactive environment
+2. Back up the database before migrations
+3. Run database migrations using the configured command
+4. Continue the deployment if migrations succeed
+
+## Multi-App Deployment
+
+Using the master proxy for multiple applications:
+
+```bash
+# Initialize the master proxy
+./scripts/bgd-init.sh --proxy
+
+# Deploy first app
+./scripts/bgd-deploy.sh 1.0.0 --app-name=app1 --image-repo=ghcr.io/myorg/app1 \
+  --domain-name=app1.example.com
+
+# Deploy second app
+./scripts/bgd-deploy.sh 2.0.0 --app-name=app2 --image-repo=ghcr.io/myorg/app2 \
+  --domain-name=app2.example.com
+```
+
+The master proxy will:
+1. Automatically route traffic based on domain names
+2. Manage SSL certificates centrally
+3. Provide a unified point of entry for all applications
+
+## CI/CD Integration
+
+Example GitHub Actions workflow:
 
 ```yaml
-name: Basic Deployment
+# In your repository's .github/workflows/deploy.yml
+name: Deploy
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set version
-        id: versioning
-        run: echo "version=$(date +'%Y%m%d.%H%M%S')" >> $GITHUB_OUTPUT
-      
-      - name: Deploy to Production
-        uses: appleboy/ssh-action@master
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v3
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
+          push: true
+          tags: ghcr.io/myorg/myapp:${{ github.sha }}
+          
+      - name: Deploy using SSH
+        uses: appleboy/ssh-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            cd /app/myapp
-            
-            # Deploy
-            ./scripts/bgd-deploy.sh "${{ steps.versioning.outputs.version }}" \
+            cd /opt/bgd
+            ./scripts/bgd-deploy.sh ${{ github.sha }} \
               --app-name=myapp \
               --image-repo=ghcr.io/myorg/myapp \
-              --nginx-port=80 \
-              --blue-port=8081 \
-              --green-port=8082 \
-              --health-endpoint=/health
-            
-            # Complete the cutover
-            ./scripts/bgd-cutover.sh $(grep -q blue nginx.conf && echo "green" || echo "blue") \
-              --app-name=myapp
+              --cutover
 ```
 
-## Multi-Container Deployment
+## Rollback Operations
 
-This example shows deploying multiple containers with shared services:
+If you need to roll back to the previous version:
 
 ```bash
-# Initial deployment with shared services setup
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/backend \
-  --frontend-image-repo=ghcr.io/myorg/frontend \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --setup-shared \
-  --database-url="postgresql://user:pass@localhost/myapp"
+# Roll back to inactive environment
+./scripts/bgd-rollback.sh --app-name=myapp
 
-# Subsequent deployment
-./scripts/bgd-deploy.sh v1.0.1 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/backend \
-  --frontend-image-repo=ghcr.io/myorg/frontend \
-  --frontend-version=v2.0.0 \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --database-url="postgresql://user:pass@localhost/myapp"
+# Force rollback even if health checks fail
+./scripts/bgd-rollback.sh --app-name=myapp --force
+
+# Roll back including database changes
+./scripts/bgd-rollback.sh --app-name=myapp --db-rollback
 ```
 
-### docker-compose.yml for Multi-Container Setup
+Rollback will:
+1. Switch traffic back to the previous environment
+2. Roll back database changes if requested
+3. Log the rollback operation for audit purposes
 
-```yaml
-version: '3.8'
-name: ${APP_NAME:-myapp}
+## Environment Cleanup
 
-networks:
-  shared-network:
-    name: ${APP_NAME}-shared-network
-    external: ${SHARED_NETWORK_EXISTS:-false}
-  env-network:
-    name: ${APP_NAME}-${ENV_NAME}-network
-    driver: bridge
-
-volumes:
-  db-data:
-    name: ${APP_NAME}-db-data
-    external: ${DB_DATA_EXISTS:-false}
-
-services:
-  # Backend API
-  app:
-    image: ${IMAGE_REPO:-ghcr.io/myorg/backend}:${VERSION:-latest}
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=${DATABASE_URL}
-    ports:
-      - '${PORT:-3000}:3000'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - env-network
-      - shared-network
-    labels:
-      - "bgd.role=deployable"
-
-  # Frontend application
-  frontend:
-    image: ${FRONTEND_IMAGE_REPO:-ghcr.io/myorg/frontend}:${FRONTEND_VERSION:-latest}
-    restart: unless-stopped
-    environment:
-      - NODE_ENV=production
-      - API_URL=http://app:3000
-    ports:
-      - '${FRONTEND_PORT:-8080}:80'
-    healthcheck:
-      test: ['CMD', 'curl', '-f', 'http://localhost:80/health']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - env-network
-      - shared-network
-    labels:
-      - "bgd.role=deployable"
-
-  # Database (shared)
-  db:
-    image: postgres:15-alpine
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${DB_NAME:-myapp}
-      - POSTGRES_USER=${DB_USER:-postgres}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
-    volumes:
-      - db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - shared-network
-    labels:
-      - "bgd.role=persistent"
-    profiles:
-      - shared
-
-  # Nginx (reverse proxy)
-  nginx:
-    image: nginx:stable-alpine
-    restart: unless-stopped
-    ports:
-      - '${NGINX_PORT:-80}:80'
-      - '${NGINX_SSL_PORT:-443}:443'
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro
-    networks:
-      - env-network
-      - shared-network
-    depends_on:
-      - app
-      - frontend
-```
-
-## Using the Database Migrations Plugin
-
-This example demonstrates using the database migrations plugin for zero-downtime migrations:
+Clean up environments after successful deployment:
 
 ```bash
-# Deploy with database migrations
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --database-url="postgresql://user:pass@localhost/myapp" \
-  --db-shadow-enabled=true \
-  --db-shadow-suffix="_shadow" \
-  --migrations-cmd="npx prisma migrate deploy"
+# Clean up inactive environment
+./scripts/bgd-cleanup.sh --app-name=myapp
+
+# Clean up specific environment
+./scripts/bgd-cleanup.sh --app-name=myapp --environment=blue
+
+# Dry run to see what would be cleaned up
+./scripts/bgd-cleanup.sh --app-name=myapp --dry-run
 ```
 
-### Creating a Custom Migration Script
+Cleanup operations:
+1. Remove containers and networks
+2. Remove volumes (unless --keep-volumes is specified)
+3. Clean up unused Docker images
 
-For applications with specific migration needs, you can create a custom migration script:
+## Health Checks
+
+Perform health checks on environments:
 
 ```bash
-#!/bin/bash
-# migrations.sh
+# Check health of specific environment
+./scripts/bgd-health-check.sh --app-name=myapp --environment=blue
 
-# Run database migrations
-echo "Running migrations for $DATABASE_URL"
+# Check both environments
+./scripts/bgd-health-check.sh --app-name=myapp --environment=both
 
-# For Prisma
-npx prisma migrate deploy
-
-# For custom SQL migrations
-psql "$DATABASE_URL" -f ./migrations/schema.sql
-
-exit $?
+# Custom health check parameters
+./scripts/bgd-health-check.sh --app-name=myapp --endpoint=/api/healthz --retries=20 --delay=10
 ```
 
-Then use it in your deployment:
+Health checks ensure:
+1. The application is responding correctly
+2. The correct status codes are returned
+3. The application is ready to receive traffic
+
+## Advanced Examples
+
+### Custom Deployment Profile
+
+Create and use a deployment profile for different environments:
 
 ```bash
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --database-url="postgresql://user:pass@localhost/myapp" \
-  --migrations-cmd="./migrations.sh"
+# Create a profile
+cat > ./profiles/production/env.conf << EOL
+HEALTH_RETRIES=20
+HEALTH_DELAY=10
+CACHE_ENABLED=true
+SSL_ENABLED=true
+DOMAIN_NAME=myapp.example.com
+EOL
+
+# Deploy using profile
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --profile=production --cutover
 ```
 
-## Using the Service Discovery Plugin
+### Notification Setup
 
-This example demonstrates using the service discovery plugin:
+To receive notifications on deployment events:
 
 ```bash
-# Deploy with service discovery
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --service-registry-enabled=true \
-  --service-auto-generate-urls=true
+# Set up Slack notifications
+export NOTIFY_ENABLED=true
+export NOTIFY_CHANNELS=slack
+export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Deploy with notifications
+./scripts/bgd-deploy.sh 1.0.0 --app-name=myapp --image-repo=ghcr.io/myorg/myapp \
+  --cutover
 ```
 
-### Multi-Service Discovery
-
-For applications with multiple services that need to discover each other:
-
-```bash
-# Deploy first service
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=auth-service \
-  --image-repo=ghcr.io/myorg/auth-service \
-  --nginx-port=8000 \
-  --blue-port=8001 \
-  --green-port=8002 \
-  --health-endpoint=/health \
-  --service-registry-enabled=true
-
-# Deploy second service
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=api-service \
-  --image-repo=ghcr.io/myorg/api-service \
-  --nginx-port=8010 \
-  --blue-port=8011 \
-  --green-port=8012 \
-  --health-endpoint=/health \
-  --service-registry-enabled=true
-```
-
-## Using the SSL Automation Plugin
-
-This example demonstrates using the SSL automation plugin with Let's Encrypt:
-
-```bash
-# Deploy with SSL automation
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --nginx-ssl-port=443 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --domain-name="example.com" \
-  --certbot-email="admin@example.com" \
-  --ssl-enabled=true
-```
-
-### SSL with Multiple Domains
-
-For applications that need SSL for multiple domains:
-
-```bash
-# Deploy with multiple domains
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --nginx-ssl-port=443 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --domain-name="example.com" \
-  --ssl-domains="www.example.com,api.example.com,admin.example.com" \
-  --certbot-email="admin@example.com" \
-  --ssl-enabled=true
-```
-
-## Using the Notification Plugin
-
-This example demonstrates using the notification plugin:
-
-```bash
-# Deploy with Telegram notifications
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --notify-enabled=true \
-  --telegram-bot-token="your-token" \
-  --telegram-chat-id="your-chat-id"
-
-# Deploy with Slack notifications
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/myapp \
-  --nginx-port=80 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --notify-enabled=true \
-  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ"
-```
-
-## Advanced Scenarios
-
-### Full Multi-Environment Setup
-
-This example demonstrates a complete multi-environment setup with all plugins enabled:
-
-```bash
-# Initial deployment with all features
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=myapp \
-  --image-repo=ghcr.io/myorg/backend \
-  --frontend-image-repo=ghcr.io/myorg/frontend \
-  --nginx-port=80 \
-  --nginx-ssl-port=443 \
-  --blue-port=8081 \
-  --green-port=8082 \
-  --health-endpoint=/health \
-  --setup-shared \
-  --database-url="postgresql://user:pass@localhost/myapp" \
-  --domain-name="example.com" \
-  --certbot-email="admin@example.com" \
-  --ssl-enabled=true \
-  --db-shadow-enabled=true \
-  --service-registry-enabled=true \
-  --notify-enabled=true \
-  --slack-webhook="https://hooks.slack.com/services/XXX/YYY/ZZZ" \
-  --auto-port-assignment \
-  --auto-rollback
-```
-
-### Hybrid Frontend/Backend Deployment
-
-This example shows how to deploy a separate frontend and backend:
-
-```bash
-# Deploy backend
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=backend \
-  --image-repo=ghcr.io/myorg/backend \
-  --nginx-port=8000 \
-  --blue-port=8001 \
-  --green-port=8002 \
-  --health-endpoint=/health \
-  --database-url="postgresql://user:pass@localhost/myapp" \
-  --domain-name="api.example.com" \
-  --ssl-enabled=true
-
-# Deploy frontend
-./scripts/bgd-deploy.sh v2.0.0 \
-  --app-name=frontend \
-  --image-repo=ghcr.io/myorg/frontend \
-  --nginx-port=80 \
-  --nginx-ssl-port=443 \
-  --blue-port=3001 \
-  --green-port=3002 \
-  --health-endpoint=/health \
-  --domain-name="example.com" \
-  --ssl-enabled=true
-```
-
-### Multiple Independent Applications
-
-This example shows how to manage multiple applications on the same server:
-
-```bash
-# Deploy first application
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=app1 \
-  --image-repo=ghcr.io/myorg/app1 \
-  --nginx-port=8001 \
-  --blue-port=8011 \
-  --green-port=8012 \
-  --health-endpoint=/health \
-  --domain-name="app1.example.com" \
-  --ssl-enabled=true
-
-# Deploy second application
-./scripts/bgd-deploy.sh v1.0.0 \
-  --app-name=app2 \
-  --image-repo=ghcr.io/myorg/app2 \
-  --nginx-port=8002 \
-  --blue-port=8021 \
-  --green-port=8022 \
-  --health-endpoint=/health \
-  --domain-name="app2.example.com" \
-  --ssl-enabled=true
-```
-
-With this setup, each application operates independently with its own deployment cycle, but they can share the server resources efficiently.
+This will send notifications for:
+1. Deployment start and completion
+2. Cutover operations
+3. Rollbacks and failures

@@ -1,362 +1,141 @@
 #!/bin/bash
 #
-# bgd-db-migrations.sh - Database migration management plugin for Blue/Green Deployment
+# bgd-db-migrations.sh - Database migration plugin for Blue/Green Deployment
 #
-# This plugin provides database migration capabilities with zero-downtime approach:
-# - Schema and full database backups
-# - Shadow database for zero-downtime migrations
-# - Automatic rollback capabilities
+# This plugin adds database migration functionality to the deployment process
 
 # Register plugin arguments
 bgd_register_db_migrations_arguments() {
-  bgd_register_plugin_argument "db-migrations" "DB_SHADOW_ENABLED" "true"
-  bgd_register_plugin_argument "db-migrations" "DB_SHADOW_SUFFIX" "_shadow"
-  bgd_register_plugin_argument "db-migrations" "DB_BACKUP_DIR" "./backups"
-  bgd_register_plugin_argument "db-migrations" "MIGRATIONS_CMD" "npm run migrate"
-  bgd_register_plugin_argument "db-migrations" "SKIP_MIGRATIONS" "false"
-  bgd_register_plugin_argument "db-migrations" "DB_TYPE" "postgres" # postgres, mysql
+  bgd_register_plugin_argument "db-migrations" "DB_MIGRATIONS_ENABLED" "false"
+  bgd_register_plugin_argument "db-migrations" "DB_MIGRATIONS_COMMAND" "npm run migrate"
+  bgd_register_plugin_argument "db-migrations" "DB_BACKUP_ENABLED" "true"
+  bgd_register_plugin_argument "db-migrations" "DB_ROLLBACK_COMMAND" "npm run migrate:rollback"
+  bgd_register_plugin_argument "db-migrations" "DB_BACKUP_COMMAND" "npm run db:backup"
+  bgd_register_plugin_argument "db-migrations" "DB_MIGRATION_TIMEOUT" "300"
 }
 
-# Get database type and connection details
-bgd_get_db_connection_details() {
-  # Parse DATABASE_URL to extract components
-  if [ -n "${DATABASE_URL:-}" ]; then
-    # Extract DB type from URL
-    DB_TYPE=$(echo "$DATABASE_URL" | cut -d: -f1)
-    
-    # Parse connection details
-    if [[ "$DATABASE_URL" =~ ^([^:]+)://([^:]+):([^@]+)@([^:/]+):([^/]+)/(.+)$ ]]; then
-      DB_USER="${BASH_REMATCH[2]}"
-      DB_PASSWORD="${BASH_REMATCH[3]}"
-      DB_HOST="${BASH_REMATCH[4]}"
-      DB_PORT="${BASH_REMATCH[5]}"
-      DB_NAME="${BASH_REMATCH[6]}"
-    fi
+# Run database migrations for an environment
+bgd_run_migrations() {
+  local env_name="$1"
+  local app_name="${2:-$APP_NAME}"
+  
+  # Check if DB migrations are enabled
+  if [ "${DB_MIGRATIONS_ENABLED:-false}" != "true" ]; then
+    bgd_log "Database migrations are disabled" "info"
+    return 0
   fi
   
-  # Apply defaults if not set
-  DB_TYPE="${DB_TYPE:-postgres}"
-  DB_USER="${DB_USER:-postgres}"
-  DB_PASSWORD="${DB_PASSWORD:-postgres}"
-  DB_HOST="${DB_HOST:-localhost}"
-  DB_PORT="${DB_PORT:-5432}"
-  DB_NAME="${DB_NAME:-$APP_NAME}"
-}
-
-# Create database connection URL
-bgd_create_db_url() {
-  local db_type="$1"
-  local db_user="$2"
-  local db_password="$3"
-  local db_host="$4"
-  local db_port="$5"
-  local db_name="$6"
+  bgd_log "Running database migrations for $app_name ($env_name)" "info"
   
-  printf "%s://%s:%s@%s:%s/%s" "$db_type" "$db_user" "$db_password" "$db_host" "$db_port" "$db_name"
-}
-
-# Backup the database
-bgd_backup_database() {
-  local version="$1"
-  local env_name="$2"
+  # Backup database if enabled
+  if [ "${DB_BACKUP_ENABLED:-true}" = "true" ]; then
+    bgd_backup_database "$env_name" "$app_name"
+  fi
   
-  bgd_get_db_connection_details
-  local backup_dir="${DB_BACKUP_DIR:-./backups}"
+  # Run migrations
+  local container_name="${app_name}-${env_name}-app"
+  local migration_command="${DB_MIGRATIONS_COMMAND:-npm run migrate}"
+  local timeout="${DB_MIGRATION_TIMEOUT:-300}"
   
-  # Create backup directory if it doesn't exist
-  bgd_ensure_directory "$backup_dir"
+  bgd_log "Executing migration command in container $container_name: $migration_command" "info"
   
-  # Generate backup filename with timestamp
-  local timestamp=$(date +"%Y%m%d-%H%M%S")
-  local backup_file="$backup_dir/${APP_NAME}_${version}_${env_name}_${timestamp}.sql"
-  
-  bgd_log "Backing up database for version $version ($env_name environment)" "info"
-  
-  case "$DB_TYPE" in
-    postgres|postgresql)
-      # Use pg_dump for PostgreSQL
-      PGPASSWORD="$DB_PASSWORD" pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -f "$backup_file" || {
-        bgd_log "Failed to backup PostgreSQL database" "error"
-        return 1
-      }
-      ;;
-    mysql)
-      # Use mysqldump for MySQL
-      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" > "$backup_file" || {
-        bgd_log "Failed to backup MySQL database" "error"
-        return 1
-      }
-      ;;
-    *)
-      bgd_log "Unsupported database type: $DB_TYPE" "error"
-      return 1
-      ;;
-  esac
-  
-  bgd_log "Database backup completed: $backup_file" "success"
-  return 0
-}
-
-# Create a shadow database for zero-downtime migrations
-bgd_create_shadow_database() {
-  local version="$1"
-  
-  bgd_get_db_connection_details
-  local shadow_db_name="${DB_NAME}${DB_SHADOW_SUFFIX}"
-  
-  bgd_log "Creating shadow database for version $version" "info"
-  
-  case "$DB_TYPE" in
-    postgres|postgresql)
-      # Create PostgreSQL shadow database
-      PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "DROP DATABASE IF EXISTS \"$shadow_db_name\";" || {
-        bgd_log "Failed to drop existing shadow database" "warning"
-      }
-      
-      # Create new shadow database as a clone of the current one
-      PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "CREATE DATABASE \"$shadow_db_name\" WITH TEMPLATE \"$DB_NAME\";" || {
-        bgd_log "Failed to create shadow database" "error"
-        return 1
-      }
-      ;;
-    mysql)
-      # Create MySQL shadow database
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$shadow_db_name\`;" || {
-        bgd_log "Failed to drop existing shadow database" "warning"
-      }
-      
-      # Create new shadow database
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE DATABASE \`$shadow_db_name\`;" || {
-        bgd_log "Failed to create shadow database" "error"
-        return 1
-      }
-      
-      # Copy data from original to shadow
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "SHOW TABLES FROM \`$DB_NAME\`;" | grep -v Tables_in | while read table; do
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "CREATE TABLE \`$shadow_db_name\`.\`$table\` LIKE \`$DB_NAME\`.\`$table\`; INSERT INTO \`$shadow_db_name\`.\`$table\` SELECT * FROM \`$DB_NAME\`.\`$table\`;"
-      done
-      ;;
-    *)
-      bgd_log "Unsupported database type: $DB_TYPE" "error"
-      return 1
-      ;;
-  esac
-  
-  bgd_log "Shadow database created: $shadow_db_name" "success"
-  
-  # Create shadow database URL
-  local shadow_db_url=$(bgd_create_db_url "$DB_TYPE" "$DB_USER" "$DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$shadow_db_name")
-  
-  # Export shadow database URL for migrations
-  export SHADOW_DATABASE_URL="$shadow_db_url"
-  
-  return 0
-}
-
-# Apply migrations to shadow database
-bgd_apply_migrations_to_shadow() {
-  local version="$1"
-  local env_name="$2"
-  
-  bgd_get_db_connection_details
-  local shadow_db_name="${DB_NAME}${DB_SHADOW_SUFFIX}"
-  local shadow_db_url="${SHADOW_DATABASE_URL}"
-  
-  bgd_log "Applying migrations to shadow database" "info"
-  
-  # Get Docker Compose command
-  local docker_compose=$(bgd_get_docker_compose_cmd)
-  
-  # Temporarily modify DATABASE_URL to point to shadow database
-  local original_db_url="$DATABASE_URL"
-  export DATABASE_URL="$shadow_db_url"
-  
-  # Run migrations on shadow database
-  if $docker_compose -p "${APP_NAME}-${env_name}" exec -T -e DATABASE_URL="$shadow_db_url" app sh -c "${MIGRATIONS_CMD}"; then
-    bgd_log "Migrations applied successfully to shadow database" "success"
-    # Restore original DATABASE_URL
-    export DATABASE_URL="$original_db_url"
-    return 0
-  else
-    bgd_log "Failed to apply migrations to shadow database" "error"
-    # Restore original DATABASE_URL
-    export DATABASE_URL="$original_db_url"
+  # Run migrations in container with timeout
+  if ! docker exec -t "$container_name" sh -c "timeout $timeout $migration_command"; then
+    bgd_log "Migration failed for $app_name ($env_name)" "error"
     return 1
   fi
-}
-
-# Swap shadow database with main database - improved implementation
-bgd_swap_databases() {
-  bgd_get_db_connection_details
-  local shadow_db_name="${DB_NAME}${DB_SHADOW_SUFFIX}"
-  local temp_db_name="${DB_NAME}_temp"
   
-  bgd_log "Swapping shadow database with main database" "info"
-  
-  # Use a case statement to handle different database types
-  case "$DB_TYPE" in
-    postgres|postgresql)
-      # First rename current to temp
-      PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$DB_NAME\" RENAME TO \"$temp_db_name\";" || {
-        bgd_log "Failed to rename current database to temp" "error"
-        return 1
-      }
-      
-      # Rename shadow to current
-      PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$shadow_db_name\" RENAME TO \"$DB_NAME\";" || {
-        # Try to restore original name if shadow rename fails
-        PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$temp_db_name\" RENAME TO \"$DB_NAME\";"
-        bgd_log "Failed to rename shadow database to current" "error"
-        return 1
-      }
-      
-      # Rename temp to shadow for future use
-      PGPASSWORD="$DB_PASSWORD" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -c "ALTER DATABASE \"$temp_db_name\" RENAME TO \"$shadow_db_name\";" || {
-        bgd_log "Failed to rename temp database to shadow" "warning"
-      }
-      
-      bgd_log "PostgreSQL database swap completed successfully" "success"
-      ;;
-    
-    mysql)
-      # For MySQL we use a different approach since it doesn't support direct database renaming
-      
-      # First backup the current database
-      bgd_log "Backing up current database before swap" "info"
-      local backup_file="${DB_NAME}_backup.sql"
-      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$DB_NAME" > "$backup_file" || {
-        bgd_log "Failed to backup current database" "error"
-        return 1
-      }
-      
-      # Also export the shadow database that will become the new main db
-      local shadow_export="${shadow_db_name}_export.sql"
-      mysqldump -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" --add-drop-table --routines --triggers --events "$shadow_db_name" > "$shadow_export" || {
-        bgd_log "Failed to export shadow database" "error"
-        return 1
-      }
-      
-      # Lock tables to prevent writes during the swap
-      bgd_log "Locking tables during database swap" "info"
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "FLUSH TABLES WITH READ LOCK; UNLOCK TABLES;"
-      
-      # Drop and recreate databases
-      bgd_log "Recreating databases for swap" "info"
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "DROP DATABASE IF EXISTS \`$DB_NAME\`; CREATE DATABASE \`$DB_NAME\`; DROP DATABASE IF EXISTS \`$shadow_db_name\`; CREATE DATABASE \`$shadow_db_name\`;"
-      
-      # Import the shadow data into the main db
-      bgd_log "Importing shadow data to main database" "info"
-      mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" "$DB_NAME" < "$shadow_export"
-      
-      # Clean up export files
-      rm -f "$shadow_export"
-      
-      bgd_log "MySQL database swap completed successfully" "success"
-      ;;
-    
-    *)
-      bgd_log "Unsupported database type: $DB_TYPE" "error"
-      return 1
-      ;;
-  esac
-  
-  bgd_log "Database swap completed successfully" "success"
+  bgd_log "Migration completed successfully for $app_name ($env_name)" "success"
   return 0
 }
 
-# Database Migration Hooks
-bgd_hook_pre_deploy() {
-  local version="$1"
-  local app_name="$2"
+# Backup database before migrations
+bgd_backup_database() {
+  local env_name="$1"
+  local app_name="${2:-$APP_NAME}"
   
-  # Skip if migrations are disabled
-  if [ "${SKIP_MIGRATIONS:-false}" = "true" ]; then
-    bgd_log "Database migrations are disabled, skipping pre-deployment database tasks" "info"
-    return 0
-  fi
+  bgd_log "Backing up database for $app_name ($env_name)" "info"
   
-  # Skip if no DATABASE_URL is provided
-  if [ -z "${DATABASE_URL:-}" ]; then
-    bgd_log "No DATABASE_URL provided, skipping database operations" "info"
-    return 0
-  fi
+  local container_name="${app_name}-${env_name}-app"
+  local backup_command="${DB_BACKUP_COMMAND:-npm run db:backup}"
   
-  # Backup database before deployment
-  bgd_backup_database "$version" "${TARGET_ENV:-unknown}" || {
-    bgd_log "Database backup failed, but continuing with deployment" "warning"
-    # Continue despite warning
+  # Create backup directory
+  local backup_dir="${BGD_BASE_DIR}/backups/${app_name}"
+  mkdir -p "$backup_dir" || {
+    bgd_log "Failed to create backup directory: $backup_dir" "error"
+    return 1
   }
   
-  # Create shadow database if enabled
-  if [ "${DB_SHADOW_ENABLED:-true}" = "true" ]; then
-    bgd_create_shadow_database "$version" || {
-      bgd_log "Shadow database creation failed" "error"
-      return 1
-    }
+  local backup_file="${backup_dir}/${app_name}-${env_name}-$(date +%Y%m%d%H%M%S).sql"
+  
+  # Run backup command in container
+  if ! docker exec -t "$container_name" sh -c "$backup_command" > "$backup_file" 2>/dev/null; then
+    bgd_log "Database backup failed for $app_name ($env_name)" "error"
+    return 1
   fi
   
+  bgd_log "Database backup completed successfully: $backup_file" "success"
   return 0
 }
 
-bgd_hook_post_deploy() {
-  local version="$1"
-  local env_name="$2"
+# Rollback database migrations
+bgd_rollback_migrations() {
+  local env_name="$1"
+  local app_name="${2:-$APP_NAME}"
   
-  # Skip if migrations are disabled
-  if [ "${SKIP_MIGRATIONS:-false}" = "true" ]; then
-    bgd_log "Database migrations are disabled, skipping post-deployment database tasks" "info"
+  # Check if DB migrations are enabled
+  if [ "${DB_MIGRATIONS_ENABLED:-false}" != "true" ]; then
+    bgd_log "Database migrations are disabled" "info"
     return 0
   fi
   
-  # Skip if no DATABASE_URL is provided
-  if [ -z "${DATABASE_URL:-}" ]; then
-    bgd_log "No DATABASE_URL provided, skipping database operations" "info"
-    return 0
+  bgd_log "Rolling back database migrations for $app_name ($env_name)" "info"
+  
+  local container_name="${app_name}-${env_name}-app"
+  local rollback_command="${DB_ROLLBACK_COMMAND:-npm run migrate:rollback}"
+  
+  # Run rollback command in container
+  if ! docker exec -t "$container_name" sh -c "$rollback_command"; then
+    bgd_log "Migration rollback failed for $app_name ($env_name)" "error"
+    return 1
   fi
   
-  # Apply migrations to shadow database if enabled
-  if [ "${DB_SHADOW_ENABLED:-true}" = "true" ]; then
-    if bgd_apply_migrations_to_shadow "$version" "$env_name"; then
-      # Swap databases after successful migration
-      bgd_swap_databases || {
-        bgd_log "Database swap failed, application will use original database" "error"
-        return 1
-      }
-    else
-      bgd_log "Shadow database migrations failed" "error"
-      return 1
-    fi
-  fi
-  
+  bgd_log "Migration rollback completed successfully for $app_name ($env_name)" "success"
   return 0
 }
 
-bgd_hook_pre_rollback() {
-  # Prepare for database rollback if needed
-  if [ -z "${DATABASE_URL:-}" ]; then
+# Migration plugin hook for post environment start
+bgd_hook_post_env_start() {
+  local env_name="$1"
+  
+  # Check if DB migrations are enabled
+  if [ "${DB_MIGRATIONS_ENABLED:-false}" != "true" ]; then
     return 0
   fi
   
-  bgd_log "Preparing for database rollback" "info"
-  
-  # Backup current database state before rollback
-  bgd_backup_database "rollback" "before" || {
-    bgd_log "Failed to backup database before rollback" "warning"
-    # Continue despite warning
+  # Run migrations
+  bgd_run_migrations "$env_name" "${APP_NAME}" || {
+    bgd_log "Migrations failed, deployment may be unstable" "warning"
+    return 1
   }
   
   return 0
 }
 
+# Migration plugin hook for rollback
 bgd_hook_post_rollback() {
-  local rollback_env="$1"
+  local target_env="$1"
   
-  # If we don't have a database URL, nothing to do
-  if [ -z "${DATABASE_URL:-}" ]; then
+  # Check if DB migrations are enabled and DB_ROLLBACK_ON_REVERT is true
+  if [ "${DB_MIGRATIONS_ENABLED:-false}" != "true" ] || [ "${DB_ROLLBACK_ON_REVERT:-false}" != "true" ]; then
     return 0
   fi
   
-  bgd_log "Database rollback not required for simple environment switch" "info"
+  # Run migrations rollback
+  bgd_rollback_migrations "$target_env" "${APP_NAME}" || {
+    bgd_log "Migration rollback failed, rollback may be unstable" "warning"
+    return 1
+  }
   
   return 0
 }
